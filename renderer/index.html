@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>WA Bridge</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ===== login ===== -->
+  <main id="login" class="hidden">
+    <form id="login-form" class="card" autocomplete="off">
+      <div class="logo">💬</div>
+      <h1>WA Bridge</h1>
+      <p class="sub">התחברות לחשבון שלך בשרת</p>
+      <label>הקישור האישי
+        <input id="l-link" type="text" dir="ltr" placeholder="https://…onrender.com/me/…" spellcheck="false">
+      </label>
+      <p class="hint">בדשבורד, ליד שמך, לחץ "אזור אישי" והעתק את הכתובת.</p>
+      <label>סיסמה (של האזור האישי)
+        <input id="l-pass" type="password" dir="ltr">
+      </label>
+      <label id="l-code-wrap" class="hidden">קוד אימות (מאפליקציית האימות)
+        <input id="l-code" type="text" inputmode="numeric" maxlength="8" dir="ltr">
+      </label>
+      <div id="l-error" class="error hidden"></div>
+      <button id="l-btn" class="primary" type="submit">התחבר</button>
+      <p class="ver" id="l-ver"></p>
+    </form>
+  </main>
+
+  <!-- ===== app ===== -->
+  <div id="app" class="hidden">
+    <aside id="side">
+      <header class="side-head">
+        <div class="me"><div class="avatar sm" id="me-avatar">?</div><span id="me-name"></span></div>
+        <div class="tools">
+          <button id="b-new" title="שיחה חדשה (Ctrl+N)" class="icon">✎</button>
+          <button id="b-settings" title="הגדרות" class="icon">⚙</button>
+        </div>
+      </header>
+      <div class="search"><input id="search" type="search" placeholder="חיפוש שיחה (Ctrl+K)" dir="auto"></div>
+      <div id="list" class="list"></div>
+      <footer class="side-foot">
+        <span id="foot-ver"></span>
+        <button id="foot-update" class="link hidden"></button>
+      </footer>
+    </aside>
+
+    <section id="main">
+      <div id="banner" class="banner hidden"></div>
+      <div id="empty" class="empty">
+        <div class="logo big">💬</div>
+        <h2>WA Bridge</h2>
+        <p>בחר שיחה מהרשימה, או התחל שיחה חדשה עם מספר טלפון.</p>
+        <button id="b-new2" class="primary">שיחה חדשה</button>
+      </div>
+      <div id="chat" class="chat hidden">
+        <header class="chat-head">
+          <div class="avatar" id="c-avatar"></div>
+          <div class="c-title"><div id="c-name"></div><div id="c-sub" class="sub"></div></div>
+          <button id="b-del" class="icon" title="מחק שיחה">🗑</button>
+        </header>
+        <div id="thread" class="thread"></div>
+        <div id="chips" class="chips hidden"></div>
+        <footer class="composer">
+          <div class="emoji-wrap">
+            <button id="b-emoji" class="icon" title="אימוג'י">☺</button>
+            <div id="emoji" class="emoji hidden"></div>
+          </div>
+          <button id="b-attach" class="icon" title="צרף קובץ">📎</button>
+          <textarea id="input" rows="1" placeholder="הקלד הודעה" dir="auto"></textarea>
+          <button id="b-send" class="send" title="שלח (Enter)">➤</button>
+        </footer>
+      </div>
+    </section>
+  </div>
+
+  <div id="modal" class="modal hidden"><div class="dialog" id="dialog"></div></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

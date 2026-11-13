@@ -1,0 +1,49 @@
+{
+  "name": "wa-bridge-desktop",
+  "productName": "WA Bridge",
+  "version": "1.0.0",
+  "description": "WA Bridge - Windows desktop client (WhatsApp-style chat over the WA Bridge server)",
+  "main": "main.js",
+  "author": "WA Bridge",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/api.test.js",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "electron": "44.10.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.wabridge.desktop",
+    "productName": "WA Bridge",
+    "copyright": "WA Bridge",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "build/tray*.png", "build/icon.png", "package.json"],
+    "asar": true,
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WA Bridge",
+      "deleteAppDataOnUninstall": false,
+      "language": "1037",
+      "artifactName": "WA-Bridge-Setup-${version}.exe"
+    },
+    "publish": [
+      { "provider": "github", "owner": "mqskwsr-collab", "repo": "wa-bridge-desktop", "releaseType": "release" }
+    ]
+  }
+}
