@@ -134,6 +134,7 @@ function initUpdater() {
   if (DEV) { setUpdate({ status: 'dev' }); return; }
   ({ autoUpdater } = require('electron-updater'));
   autoUpdater.autoDownload = true;
+  autoUpdater.disableDifferentialDownload = true; // the server streams whole files (the GitHub repo is private and sits behind it)
   autoUpdater.autoInstallOnAppQuit = true; // an update that was downloaded is installed the next time the app closes, even without a click
   autoUpdater.on('checking-for-update', () => setUpdate({ status: 'checking', error: '' }));
   autoUpdater.on('update-available', (i) => setUpdate({ status: 'downloading', version: i.version, percent: 0 }));
@@ -152,9 +153,22 @@ function initUpdater() {
   setInterval(() => checkForUpdates(false), 3 * 3600 * 1000);
 }
 
+// Updates come from the WA Bridge server (it fetches them from the private GitHub repo), authenticated with this device's key.
+function configureFeed() {
+  const s = config.getSession();
+  if (!s) return false;
+  autoUpdater.setFeedURL({
+    provider: 'generic',
+    url: `${s.serverUrl}/api/desk/update`,
+    requestHeaders: { 'x-wab-token': s.token, 'x-wab-device': s.deviceKey },
+  });
+  return true;
+}
+
 function checkForUpdates(manual) {
   if (!autoUpdater) { if (manual) setUpdate({ status: 'dev' }); return; }
   if (state.update.status === 'downloading' || state.update.status === 'ready') return;
+  if (!configureFeed()) { if (manual) setUpdate({ status: 'error', error: 'התחבר לחשבון כדי לקבל עדכונים' }); return; }
   autoUpdater.checkForUpdates().then((r) => {
     if (manual && r && r.updateInfo && r.updateInfo.version === app.getVersion() && Notification.isSupported()) {
       new Notification({ title: 'WA Bridge', body: `אתה משתמש בגרסה העדכנית (${app.getVersion()}).` }).show();
@@ -183,6 +197,7 @@ function registerIpc() {
     try {
       const r = await api.login({ serverUrl: p.serverUrl, token: p.token, password: String(password || ''), code: code ? String(code) : undefined, deviceName: `Windows - ${os.hostname()}` });
       config.setSession({ serverUrl: p.serverUrl, token: p.token, deviceKey: r.deviceKey, label: r.label });
+      setTimeout(() => checkForUpdates(false), 3000); // now that the app is signed in, look for a newer version
       return { ok: true, label: r.label, passwordIsDefault: !!r.passwordIsDefault };
     } catch (err) {
       return { ok: false, error: err.message, needCode: !!(err.data && err.data.needCode) };
