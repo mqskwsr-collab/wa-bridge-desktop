@@ -8,6 +8,7 @@
   const S = {
     info: null, convs: new Map(), msgs: new Map(), seen: new Set(), done: new Set(), drafts: new Map(),
     active: null, cursor: 0, phoneLastPollAt: 0, skew: 0, online: true, search: '', pendingFiles: [], loadingOlder: false, retentionDays: 30,
+    gen: 0, activeId: null, acctSummary: {}, addMode: false,
   };
 
   // ------------------------------------------------------------ helpers
@@ -28,7 +29,7 @@
   const now = () => Date.now() + S.skew;
 
   async function api(method, path, body) {
-    const r = await wab.call(method, path, body);
+    const r = await wab.call(method, path, body, S.activeId);
     if (!r.ok) { const e = new Error(r.error || 'שגיאה'); e.status = r.status; throw e; }
     return r.data;
   }
@@ -61,7 +62,7 @@
     return diff === 'היום' ? hhmm(t) : diff === 'אתמול' ? 'אתמול' : new Date(t).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: '2-digit' });
   }
   const fmtSize = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB');
-  const TICK = { queued: ['🕓', 'ממתין לטלפון'], sent: ['✓', 'נשלח'], failed: ['⚠', 'השליחה נכשלה'], cancelled: ['✕', 'בוטל'] };
+  const TICK = { queued: ['🕓', 'ממתין לטלפון'], picked: ['📲', 'הטלפון לקח את ההודעה'], sent: ['✓', 'נשלח'], failed: ['⚠', 'השליחה נכשלה'], cancelled: ['✕', 'בוטל'] };
   const slim = (m) => ({ id: m.id, dir: m.dir, text: String(m.text || '').slice(0, 120), at: m.at, status: m.status, files: (m.files || []).length });
 
   function linkify(text) {
@@ -77,11 +78,15 @@
   }
 
   // ------------------------------------------------------------ login
-  function showLogin(message) {
+  function showLogin(message, { add } = {}) {
     stopSync();
     S.active = null;
+    S.addMode = !!add;
     show('#app', false);
     show('#login');
+    $('#l-title').textContent = add ? 'הוספת מספר נוסף: הדבק את הקישור האישי שלו' : 'התחברות לחשבון שלך בשרת';
+    show('#l-cancel', !!add && S.info.accounts.length > 0);
+    $('#l-link').value = '';
     $('#l-ver').textContent = 'גרסה ' + S.info.version;
     const err = $('#l-error');
     err.textContent = message || '';
@@ -110,6 +115,7 @@
     S.info = await wab.info();
     if (r.passwordIsDefault) setTimeout(() => toast('מומלץ להחליף את סיסמת ברירת המחדל באזור האישי באתר'), 1500);
     await startSession();
+    toast('המספר נוסף: ' + (S.info.label || ''));
   }
 
   // ------------------------------------------------------------ session / sync
@@ -117,8 +123,16 @@
 
   async function startSession() {
     running = true;
+    S.gen++;
+    S.activeId = S.info.activeId;
+    S.active = null; S.cursor = 0; S.search = ''; S.pendingFiles = [];
+    $('#search').value = '';
+    show('#chat', false); show('#empty');
+    show('#banner', false);
     show('#login', false);
     show('#app');
+    renderAccountMenu();
+    pollOthers();
     $('#me-name').textContent = S.info.label || '';
     $('#me-avatar').textContent = initial({ type: 'private', name: S.info.label || '?' });
     $('#me-avatar').style.background = colorOf(S.info.label || '?');
@@ -134,10 +148,12 @@
     scheduleSync();
   }
 
-  function stopSync() { running = false; clearTimeout(syncTimer); }
+  function stopSync() { running = false; S.gen++; clearTimeout(syncTimer); }
 
   async function bootstrap(keepCursor) {
+    const gen = S.gen;
     const d = await api('GET', '/api/desk/bootstrap');
+    if (gen !== S.gen) return;
     if (!keepCursor) S.cursor = d.cursor;
     S.phoneLastPollAt = d.phoneLastPollAt;
     S.skew = d.serverTime - Date.now();
@@ -160,9 +176,11 @@
   async function syncOnce() {
     if (syncing || !running) return;
     syncing = true;
+    const gen = S.gen;
     try {
       for (let i = 0; i < 5; i++) {
         const d = await api('GET', '/api/desk/sync?since=' + S.cursor);
+        if (gen !== S.gen) return;
         S.phoneLastPollAt = d.phoneLastPollAt;
         S.skew = d.serverTime - Date.now();
         if (d.messages.length) applyMessages(d.messages);
@@ -230,7 +248,11 @@
   function updateUnread() {
     let n = 0;
     for (const c of S.convs.values()) n += c.unread || 0;
-    wab.setUnread(n);
+    S.acctSummary[S.activeId] = { ...(S.acctSummary[S.activeId] || {}), unread: n };
+    let others = 0;
+    for (const [id, v] of Object.entries(S.acctSummary)) if (id !== S.activeId) others += v.unread || 0;
+    show('#me-dot', others > 0);
+    wab.setUnread(n + others);
     document.title = (n ? `(${n}) ` : '') + 'WA Bridge';
   }
 
@@ -262,7 +284,8 @@
 
   // ------------------------------------------------------------ chat view
   async function openConv(k) {
-    if (S.active) S.drafts.set(S.active, $('#input').value);
+    const gen = S.gen;
+    if (S.active) S.drafts.set(S.activeId + '|' + S.active, $('#input').value);
     S.active = k;
     S.pendingFiles = [];
     renderChips();
@@ -273,14 +296,14 @@
     $('#c-avatar').replaceWith(Object.assign(avatar(c), { id: 'c-avatar' }));
     $('#c-name').textContent = c.name;
     $('#c-sub').textContent = c.type === 'group' ? 'קבוצה (הודעות טקסט בלבד)' : c.phone ? '+' + c.phone : 'ללא מספר טלפון (ניתן להשיב רק לשיחות שהתחילו בוואטסאפ)';
-    $('#input').value = S.drafts.get(k) || '';
+    $('#input').value = S.drafts.get(S.activeId + '|' + k) || '';
     autoGrow();
     renderList();
     if (!S.msgs.has(k)) {
       $('#thread').replaceChildren(el('div', { class: 'loading', text: 'טוען…' }));
       try {
         const d = await api('GET', `/api/desk/messages?type=${c.type}&name=${encodeURIComponent(c.name)}&limit=${PAGE}`);
-        if (S.active !== k) return;
+        if (S.active !== k || gen !== S.gen) return;
         S.msgs.set(k, d.messages);
         d.messages.forEach((m) => S.seen.add(m.id));
         if (d.messages.length < PAGE) S.done.add(k);
@@ -319,7 +342,7 @@
   function renderMsg(m, c) {
     const [tick, tickTitle] = TICK[m.status] || ['', ''];
     const meta = el('div', { class: 'meta' }, el('span', { text: hhmm(m.at) }));
-    if (m.dir === 'out') meta.append(el('span', { class: 'tick ' + m.status, title: tickTitle, text: tick }));
+    if (m.dir === 'out') meta.append(el('span', { class: 'tick ' + m.status, title: tickTitle, text: tick }), el('button', { class: 'info', title: 'איפה ההודעה? (מסלול ואבחון)', text: 'ⓘ', on: { click: () => journeyDialog(m) } }));
     if (m.dir === 'out' && m.status === 'queued') meta.append(el('button', { text: 'בטל', on: { click: () => cancelMsg(m) } }));
     if (m.dir === 'out' && m.status === 'failed' && m.text && !(m.files || []).length) meta.append(el('button', { text: 'שלח שוב', on: { click: () => resend(c, m.text) } }));
     const files = (m.files || []).map((f) => el('div', { class: 'file' },
@@ -356,7 +379,7 @@
     try {
       const d = await api('POST', '/api/desk/send', { type: c.type, name: c.name, text, files: S.pendingFiles.map(({ name, data }) => ({ name, data })) });
       input.value = '';
-      S.drafts.delete(k);
+      S.drafts.delete(S.activeId + '|' + k);
       S.pendingFiles = [];
       renderChips();
       autoGrow();
@@ -491,7 +514,8 @@
     const installBtn = el('button', { class: 'primary', id: 'upd-install', text: 'התקן והפעל מחדש', on: { click: () => wab.installUpdate() } });
     installBtn.classList.toggle('hidden', S.info.update.status !== 'ready');
     openDialog(el('h3', { text: 'הגדרות' }),
-      el('div', { class: 'kv' }, el('span', { text: 'חשבון' }), el('b', { text: S.info.label })),
+      el('p', { class: 'hint', style: 'margin:0', text: 'מספרים מחוברים' }),
+      ...S.info.accounts.map((a) => el('div', { class: 'toggle' }, el('span', { text: a.label + (a.id === S.activeId ? ' (פעיל)' : '') }), el('button', { class: 'secondary', text: 'הסר מהמחשב', on: { click: () => removeAccount(a.id) } }))),
       el('div', { class: 'kv' }, el('span', { text: 'שרת' }), el('b', { text: S.info.serverUrl })),
       el('div', { class: 'kv' }, el('span', { text: 'גרסה' }), el('b', { text: S.info.version })),
       upd,
@@ -499,8 +523,97 @@
       mk('הצג תוכן הודעות בהתראות', 'showPreview'),
       el('p', { class: 'hint', text: `היסטוריית הצ'אט נשמרת בשרת ${S.retentionDays ? S.retentionDays + ' ימים' : 'עד 3000 הודעות'} (ניתן לשנות באזור האישי באתר). איש הקשר נשמר לצמיתות.` }),
       el('div', { class: 'dlg-actions' },
-        el('button', { class: 'secondary', text: 'התנתק', on: { click: async () => { if (!confirm('להתנתק מהחשבון במחשב הזה?')) return; await wab.logout(); closeDialog(); showLogin(); } } }),
+        el('button', { class: 'secondary', text: 'הוסף מספר', on: { click: () => { closeDialog(); showLogin('', { add: true }); } } }),
         checkBtn, installBtn, el('button', { class: 'primary', text: 'סגור', on: { click: closeDialog } })));
+  }
+
+
+  // ------------------------------------------------------------ several numbers (accounts)
+  const acctUnread = (id) => (S.acctSummary[id] && S.acctSummary[id].unread) || 0;
+
+  function renderAccountMenu() {
+    const menu = $('#acct-menu');
+    const items = S.info.accounts.map((a, i) => el('button', { class: 'acct', on: { click: () => { menu.classList.add('hidden'); switchAccount(a.id); } } },
+      avatar({ type: 'private', name: a.label }, true),
+      el('span', { class: 'nm' }, el('b', { text: a.label }), el('span', { class: 'sub', text: i < 9 ? 'Ctrl+' + (i + 1) : '' })),
+      a.id === S.activeId ? el('span', { class: 'check', text: '✓' }) : acctUnread(a.id) ? el('span', { class: 'badge', text: String(acctUnread(a.id)) }) : null));
+    menu.replaceChildren(...items, el('div', { class: 'acct-sep' }),
+      el('button', { class: 'acct', on: { click: () => { menu.classList.add('hidden'); showLogin('', { add: true }); } } }, el('span', { text: '➕' }), el('span', { class: 'nm', text: 'הוסף מספר (קישור אישי)' })));
+  }
+
+  async function switchAccount(id) {
+    if (!id || id === S.activeId || !S.info.accounts.some((a) => a.id === id)) return;
+    if (S.active) S.drafts.set(S.activeId + '|' + S.active, $('#input').value);
+    stopSync();
+    S.info = await wab.switchAccount(id);
+    await startSession();
+  }
+
+  // unread counts of the numbers that are not open (so a message to the other number is never missed)
+  let othersTimer = null;
+  async function pollOthers() {
+    clearTimeout(othersTimer);
+    if (!running) return;
+    const gen = S.gen;
+    for (const a of S.info.accounts) {
+      if (a.id === S.activeId) continue;
+      const r = await wab.call('GET', '/api/desk/summary', null, a.id).catch(() => ({ ok: false }));
+      if (gen !== S.gen) return;
+      if (!r.ok) continue;
+      const known = S.acctSummary[a.id] && 'unread' in S.acctSummary[a.id];
+      const prev = known ? S.acctSummary[a.id].unread : 0;
+      S.acctSummary[a.id] = { unread: r.data.unread, phoneLastPollAt: r.data.phoneLastPollAt };
+      if (known && r.data.unread > prev) wab.notify({ key: 'acct:' + a.id, title: a.label, body: 'הודעות חדשות במספר הזה' });
+    }
+    updateUnread();
+    renderAccountMenu();
+    othersTimer = setTimeout(pollOthers, 20000);
+  }
+
+  async function removeAccount(id) {
+    const a = S.info.accounts.find((x) => x.id === id);
+    if (!a || !confirm(`להסיר את "${a.label}" מהמחשב הזה?\nהחשבון עצמו נשאר בשרת, ואפשר להוסיף אותו שוב בקישור האישי.`)) return;
+    const wasActive = id === S.activeId;
+    S.info = await wab.logout(id);
+    delete S.acctSummary[id];
+    closeDialog();
+    if (!S.info.accounts.length) { S.info.loggedIn = false; showLogin(); return; }
+    if (wasActive) { stopSync(); await startSession(); } else renderAccountMenu();
+  }
+
+  // ------------------------------------------------------------ status report + message journey
+  const fmtDur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? s + ' שנ׳' : s < 3600 ? Math.round(s / 60) + ' דק׳' : Math.round(s / 3600) + ' שע׳'; };
+  const dlgClose = () => el('div', { class: 'dlg-actions' }, el('button', { class: 'primary', text: 'סגור', on: { click: closeDialog } }));
+
+  async function statusDialog() {
+    const body = el('p', { class: 'sub', text: 'בודק…' });
+    openDialog(el('h3', { text: 'דוח מצב' }), body,
+      el('div', { class: 'dlg-actions' }, el('button', { class: 'secondary', text: 'רענן', on: { click: statusDialog } }), el('button', { class: 'primary', text: 'סגור', on: { click: closeDialog } })));
+    try {
+      const d = await api('GET', '/api/desk/status');
+      const kids = d.health.map((h) => el('div', { class: 'hl ' + h.level }, el('i'), el('span', { text: h.text })));
+      if (d.recentFailures.length) {
+        kids.push(el('p', { class: 'hint', style: 'margin-top:12px', text: 'כשלונות אחרונים:' }));
+        for (const f of d.recentFailures) kids.push(el('div', { class: 'sub', dir: 'auto', text: `${new Date(f.at).toLocaleString('he-IL')} · ${f.target} · ${f.reason || 'סיבה לא ידועה'}` }));
+      }
+      kids.push(el('div', { class: 'note', text: d.note }));
+      body.replaceWith(el('div', { id: 'status-body' }, ...kids));
+    } catch (e) {
+      body.replaceWith(el('div', { class: 'error', text: e.status === 404 ? 'השרת עוד לא עודכן לגרסה שתומכת בדוח מצב. נסה שוב בעוד כמה דקות.' : e.message }));
+    }
+  }
+
+  async function journeyDialog(m) {
+    const body = el('p', { class: 'sub', text: 'טוען…' });
+    openDialog(el('h3', { text: 'איפה ההודעה?' }), el('p', { class: 'sub', dir: 'auto', text: (m.text || '').slice(0, 100) || '📎 קובץ' }), body, dlgClose());
+    try {
+      const d = await api('GET', '/api/desk/message/' + encodeURIComponent(m.id));
+      body.replaceWith(el('div', {},
+        el('div', { class: 'diag ' + d.diagnosis.level }, el('b', { text: d.diagnosis.title }), el('span', { text: d.diagnosis.text })),
+        el('ul', { class: 'tl' }, ...d.timeline.map((st) => el('li', { class: st.key }, el('div', {}, el('div', { dir: 'auto', text: st.label }), el('span', { class: 'when', text: new Date(st.at).toLocaleString('he-IL') + (st.afterMs ? `   (+${fmtDur(st.afterMs)})` : '') })))))));
+    } catch (e) {
+      body.replaceWith(el('div', { class: 'error', text: e.status === 404 || e.status === 400 ? 'לא נמצאו פרטים להודעה הזו (ייתכן שנמחקה לפי תקופת השמירה, או שהשרת עוד לא עודכן).' : e.message }));
+    }
   }
 
   // ------------------------------------------------------------ wiring
@@ -538,6 +651,10 @@
     $('#b-new2').addEventListener('click', () => newChatDialog());
     $('#b-settings').addEventListener('click', settingsDialog);
     $('#b-del').addEventListener('click', deleteConv);
+    $('#b-status').addEventListener('click', statusDialog);
+    $('#l-cancel').addEventListener('click', () => { show('#login', false); startSession(); });
+    $('#me-btn').addEventListener('click', (e) => { e.stopPropagation(); renderAccountMenu(); $('#acct-menu').classList.toggle('hidden'); });
+    document.addEventListener('click', (e) => { if (!$('#acct-menu').contains(e.target)) $('#acct-menu').classList.add('hidden'); });
     $('#b-send').addEventListener('click', sendMessage);
     $('#b-attach').addEventListener('click', attach);
     $('#search').addEventListener('input', (e) => { S.search = e.target.value; renderList(); });
@@ -554,6 +671,7 @@
       if (e.key === 'Escape') { closeDialog(); emoji.classList.add('hidden'); }
       if (e.ctrlKey && e.key.toLowerCase() === 'n' && S.info.loggedIn !== false && running) { e.preventDefault(); newChatDialog(); }
       if (e.ctrlKey && e.key.toLowerCase() === 'k' && running) { e.preventDefault(); $('#search').focus(); }
+      if (e.ctrlKey && /^[1-9]$/.test(e.key) && running) { const a = S.info.accounts[Number(e.key) - 1]; if (a) { e.preventDefault(); switchAccount(a.id); } }
     });
     window.addEventListener('focus', () => {
       const c = S.convs.get(S.active);
@@ -562,8 +680,13 @@
     });
     wab.onUpdate(onUpdate);
     wab.onSettings((s) => { S.info.settings = s; });
-    wab.onOpenConv((k) => { if (S.convs.has(k)) openConv(k); });
-    wab.onAuthExpired(() => { S.info.loggedIn = false; showLogin('ההתחברות פגה (ייתכן שהסיסמה הוחלפה). התחבר שוב.'); });
+    wab.onOpenConv((k) => { if (k.startsWith('acct:')) switchAccount(k.slice(5)); else if (S.convs.has(k)) openConv(k); });
+    wab.onAuthExpired(async ({ id } = {}) => {
+      S.info = await wab.info();
+      if (!S.info.accounts.length) { S.info.loggedIn = false; showLogin('ההתחברות פגה (ייתכן שהסיסמה הוחלפה). התחבר שוב.'); return; }
+      if (id === S.activeId) { toast('ההתחברות למספר הזה פגה, עברת למספר אחר. אפשר להוסיף אותו שוב בקישור האישי.', 'error'); stopSync(); await startSession(); }
+      else { delete S.acctSummary[id]; renderAccountMenu(); toast('ההתחברות לאחד המספרים פגה. הוסף אותו מחדש בקישור האישי.', 'error'); }
+    });
     onUpdate(S.info.update);
     if (S.info.loggedIn) startSession();
     else showLogin();

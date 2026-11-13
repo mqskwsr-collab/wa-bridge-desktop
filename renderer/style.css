@@ -108,3 +108,29 @@ input,textarea{font:inherit;color:inherit}
 .toast{position:fixed;bottom:22px;inset-inline-start:50%;transform:translateX(50%);background:#222;color:#fff;padding:10px 18px;border-radius:10px;z-index:30;max-width:80vw;box-shadow:0 4px 16px rgba(0,0,0,.35)}
 .toast.error{background:#b3261e}
 ::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
+
+/* accounts + status + journey */
+.side-head{position:relative}
+.me{background:none;border-radius:8px;padding:4px 8px;text-align:start}
+.me:hover{background:var(--line)}
+.caret{color:var(--muted);font-size:12px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block}
+.acct-menu{position:absolute;top:54px;inset-inline-start:8px;width:300px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.25);z-index:10;padding:6px}
+.acct{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;width:100%;text-align:start}
+.acct:hover{background:var(--panel2)}
+.acct .nm{flex:1;min-width:0}.acct .nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct .check{color:var(--accent);font-weight:700}
+.acct-sep{height:1px;background:var(--line);margin:4px 0}
+.hl{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}
+.hl i{width:11px;height:11px;border-radius:50%;margin-top:5px;flex:none;background:#9aa5ab}
+.hl.ok i{background:#25a244}.hl.warn i{background:#f59f00}.hl.bad i{background:var(--danger)}
+.note{background:var(--panel2);border-radius:8px;padding:9px 12px;margin-top:10px;color:var(--muted);font-size:13px}
+.diag{border-radius:10px;padding:10px 12px;margin-bottom:12px;border:1px solid var(--line)}
+.diag b{display:block;margin-bottom:3px}
+.diag.ok{background:rgba(37,162,68,.10)}.diag.warn{background:rgba(245,159,0,.12)}.diag.bad{background:rgba(217,48,37,.10)}.diag.info{background:var(--panel2)}
+.tl{list-style:none;margin:0;padding:0}
+.tl li{display:flex;gap:10px;padding:6px 0;position:relative}
+.tl li::before{content:'';width:10px;height:10px;border-radius:50%;background:var(--accent);margin-top:6px;flex:none}
+.tl li.failed::before{background:var(--danger)}.tl li.cancelled::before{background:#9aa5ab}
+.tl .when{color:var(--muted);font-size:12px;direction:ltr;display:block}
+.meta .info{text-decoration:none;font-size:13px;color:var(--muted)}

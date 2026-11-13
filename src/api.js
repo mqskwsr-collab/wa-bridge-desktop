@@ -50,13 +50,14 @@ function createApi({ fetch, getSession, onAuthExpired }) {
     async login({ serverUrl, token, password, code, deviceName }) {
       return request('POST', serverUrl, '/api/desk/login', { body: { token, password, code, deviceName }, timeoutMs: 70000 });
     },
+    // opts.accountId: which signed-in account (default: the active one)
     async call(method, path, body, opts = {}) {
-      const s = getSession();
+      const s = getSession(opts.accountId);
       if (!s || !s.deviceKey) throw new ApiError('login', 401);
       try {
         return await request(method, s.serverUrl, path, { body, headers: { 'x-wab-token': s.token, 'x-wab-device': s.deviceKey }, timeoutMs: opts.timeoutMs || (path.startsWith('/api/desk/send') ? 120000 : 30000) });
       } catch (e) {
-        if (e.status === 401 && onAuthExpired) onAuthExpired();
+        if (e.status === 401 && onAuthExpired) onAuthExpired(s.id);
         throw e;
       }
     },

@@ -45,19 +45,41 @@ const ok = (m) => console.log('  ok', ++n, '-', m);
   api = createApi({ fetch: stub(() => ({ status: 401, body: { error: 'נדרש קוד', needCode: true } })), getSession: () => null });
   await assert.rejects(api.login({ serverUrl: 'https://s', token: T, password: 'p' }), (e) => e.data && e.data.needCode === true); ok('login error keeps the "needCode" flag');
 
-  // ---- config ----
+  // ---- config: several accounts ----
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabd-'));
-  const fake = { isEncryptionAvailable: () => true, encryptString: (s) => Buffer.from('E' + s), decryptString: (b) => b.toString().slice(1) };
+  const fake = { isEncryptionAvailable: () => true, encryptString: (x) => Buffer.from('E' + x), decryptString: (b) => b.toString().slice(1) };
   let c = new Config(dir, fake);
-  assert.strictEqual(c.getSession(), null);
-  c.setSession({ serverUrl: 'https://s', token: T, deviceKey: 'id.secret', label: 'דוד' });
-  assert.ok(!fs.readFileSync(path.join(dir, 'config.json'), 'utf8').includes('id.secret')); ok('the device key is not stored in clear text');
+  assert.strictEqual(c.getSession(), null); assert.deepStrictEqual(c.listAccounts(), []);
+  const a1 = c.addAccount({ serverUrl: 'https://s', token: T, deviceKey: 'id.secret1', label: 'הדסה' });
+  const a2 = c.addAccount({ serverUrl: 'https://s', token: T + 'B', deviceKey: 'id.secret2', label: 'משה' });
+  assert.notStrictEqual(a1, a2); assert.strictEqual(c.getActiveId(), a2); ok('a second number is added and becomes the active one');
+  assert.ok(!fs.readFileSync(path.join(dir, 'config.json'), 'utf8').includes('secret')); ok('device keys are not stored in clear text');
   c = new Config(dir, fake);
-  assert.strictEqual(c.getSession().deviceKey, 'id.secret'); assert.strictEqual(c.getSession().label, 'דוד'); ok('session survives a restart');
+  assert.strictEqual(c.getSession().deviceKey, 'id.secret2'); assert.strictEqual(c.getSession(a1).deviceKey, 'id.secret1'); assert.strictEqual(c.getSession(a1).label, 'הדסה'); ok('both sessions survive a restart; a session can be fetched per account');
+  assert.deepStrictEqual(c.listAccounts().map((a) => a.label), ['הדסה', 'משה']); assert.ok(!('deviceKey' in c.listAccounts()[0]) && !('token' in c.listAccounts()[0])); ok('the account list never exposes keys or tokens');
+  assert.ok(c.setActive(a1)); assert.strictEqual(c.getSession().label, 'הדסה'); assert.strictEqual(c.setActive('nope'), false); ok('switching between numbers');
+  assert.strictEqual(c.addAccount({ serverUrl: 'https://s', token: T, deviceKey: 'id.new', label: 'הדסה' }), a1); assert.strictEqual(c.listAccounts().length, 2); assert.strictEqual(c.getSession(a1).deviceKey, 'id.new'); ok('adding the same link again refreshes it instead of duplicating');
+  c.removeAccount(a1);
+  assert.strictEqual(c.getActiveId(), a2); assert.strictEqual(c.listAccounts().length, 1); ok('removing the active account falls back to another one');
+  c.removeAccount(a2); assert.strictEqual(c.getActiveId(), null); assert.strictEqual(c.getSession(), null); ok('no accounts left -> signed out');
   c.set('settings', { autoStart: false });
   assert.deepStrictEqual(c.get('settings'), { autoStart: false, showPreview: true }); ok('settings merge with defaults');
-  c.clearSession();
-  assert.strictEqual(new Config(dir, fake).getSession(), null); ok('sign-out removes the session');
+
+  // ---- migration from the single-account version ----
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wabd-'));
+  fs.writeFileSync(path.join(dir2, 'config.json'), JSON.stringify({ session: { serverUrl: 'https://s', token: T, label: 'ישן', deviceKey: 'enc:' + fake.encryptString('id.old').toString('base64') }, settings: { autoStart: false } }));
+  const m = new Config(dir2, fake);
+  assert.strictEqual(m.listAccounts().length, 1); assert.strictEqual(m.getSession().deviceKey, 'id.old'); assert.strictEqual(m.getSession().label, 'ישן'); assert.strictEqual(m.get('settings').autoStart, false); ok('an installed 1.0.x keeps its login after the update (migration)');
+
+  // ---- api client picks the account ----
+  const sessions = { a: { id: 'a', serverUrl: 'https://s', token: 'ta-token', deviceKey: 'da' }, b: { id: 'b', serverUrl: 'https://s', token: 'tb-token', deviceKey: 'db' } };
+  let expiredId = null;
+  const api2 = createApi({ fetch: stub(() => ({ status: 200, body: { ok: true } })), getSession: (id) => sessions[id || 'a'], onAuthExpired: (id) => { expiredId = id; } });
+  await api2.call('GET', '/api/desk/summary', null, { accountId: 'b' });
+  assert.strictEqual(seen[seen.length - 1].init.headers['x-wab-token'], 'tb-token'); ok('a call can target a specific account');
+  const api3 = createApi({ fetch: stub(() => ({ status: 401, body: { error: 'login' } })), getSession: (id) => sessions[id || 'a'], onAuthExpired: (id) => { expiredId = id; } });
+  await assert.rejects(api3.call('GET', '/api/desk/sync', null, { accountId: 'b' }));
+  assert.strictEqual(expiredId, 'b'); ok('a 401 reports which account expired');
 
   console.log(`\n${n} checks passed`);
 })().catch((e) => { console.error('FAILED', e); process.exit(1); });

@@ -185,7 +185,10 @@ function installUpdate() {
 // ---------------------------------------------------------------- IPC
 function info() {
   const s = config.getSession();
-  return { version: app.getVersion(), packaged: !DEV, loggedIn: !!s, label: s ? s.label : '', serverUrl: s ? s.serverUrl : '', settings: config.get('settings'), update: state.update };
+  return {
+    version: app.getVersion(), packaged: !DEV, loggedIn: !!s, label: s ? s.label : '', serverUrl: s ? s.serverUrl : '',
+    accounts: config.listAccounts(), activeId: config.getActiveId(), settings: config.get('settings'), update: state.update,
+  };
 }
 
 function registerIpc() {
@@ -196,7 +199,7 @@ function registerIpc() {
     if (!p) return { ok: false, error: 'הקישור לא תקין. הדבק את הקישור של "אזור אישי" מהדשבורד (חייב להתחיל ב-https).' };
     try {
       const r = await api.login({ serverUrl: p.serverUrl, token: p.token, password: String(password || ''), code: code ? String(code) : undefined, deviceName: `Windows - ${os.hostname()}` });
-      config.setSession({ serverUrl: p.serverUrl, token: p.token, deviceKey: r.deviceKey, label: r.label });
+      config.addAccount({ serverUrl: p.serverUrl, token: p.token, deviceKey: r.deviceKey, label: r.label }); // another number is added next to the others
       setTimeout(() => checkForUpdates(false), 3000); // now that the app is signed in, look for a newer version
       return { ok: true, label: r.label, passwordIsDefault: !!r.passwordIsDefault };
     } catch (err) {
@@ -204,19 +207,25 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('auth:logout', async () => {
-    try { await api.call('POST', '/api/desk/logout', {}); } catch { /* signing out locally anyway */ }
-    config.clearSession();
-    state.unread = 0;
-    refreshTray();
-    return { ok: true };
+  // signs ONE account out of this computer (default: the active one); the others stay
+  ipcMain.handle('auth:logout', async (e, { id } = {}) => {
+    const accountId = id || config.getActiveId();
+    try { await api.call('POST', '/api/desk/logout', {}, { accountId }); } catch { /* signing out locally anyway */ }
+    config.removeAccount(accountId);
+    if (!config.listAccounts().length) { state.unread = 0; refreshTray(); }
+    return info();
+  });
+
+  ipcMain.handle('accounts:switch', (e, { id } = {}) => {
+    config.setActive(id);
+    return info();
   });
 
   // the renderer never talks to the network itself: only these server paths, with the device key added here
-  ipcMain.handle('api:call', async (e, { method, path: p, body } = {}) => {
+  ipcMain.handle('api:call', async (e, { method, path: p, body, accountId } = {}) => {
     if (typeof p !== 'string' || !p.startsWith('/api/desk/') || p.startsWith('/api/desk/login') || !['GET', 'POST'].includes(method)) return { ok: false, status: 0, error: 'bad request' };
     try {
-      return { ok: true, data: await api.call(method, p, body) };
+      return { ok: true, data: await api.call(method, p, body, { accountId }) };
     } catch (err) {
       return { ok: false, status: err.status || 0, error: err.message };
     }
@@ -274,7 +283,7 @@ if (!gotLock) {
     api = createApi({
       fetch: (url, init) => net.fetch(url, init), // uses the system proxy settings
       getSession: () => config.getSession(),
-      onAuthExpired: () => { config.clearSession(); send('auth-expired'); },
+      onAuthExpired: (id) => { config.removeAccount(id); send('auth-expired', { id }); },
     });
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'עריכה', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

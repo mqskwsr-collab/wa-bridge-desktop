@@ -12,7 +12,7 @@
     <form id="login-form" class="card" autocomplete="off">
       <div class="logo">💬</div>
       <h1>WA Bridge</h1>
-      <p class="sub">התחברות לחשבון שלך בשרת</p>
+      <p class="sub" id="l-title">התחברות לחשבון שלך בשרת</p>
       <label>הקישור האישי
         <input id="l-link" type="text" dir="ltr" placeholder="https://…onrender.com/me/…" spellcheck="false">
       </label>
@@ -25,6 +25,7 @@
       </label>
       <div id="l-error" class="error hidden"></div>
       <button id="l-btn" class="primary" type="submit">התחבר</button>
+      <button id="l-cancel" class="secondary hidden" type="button" style="width:100%;margin-top:8px">חזרה לחשבון הנוכחי</button>
       <p class="ver" id="l-ver"></p>
     </form>
   </main>
@@ -33,8 +34,10 @@
   <div id="app" class="hidden">
     <aside id="side">
       <header class="side-head">
-        <div class="me"><div class="avatar sm" id="me-avatar">?</div><span id="me-name"></span></div>
+        <button class="me" id="me-btn" title="החלפת מספר (Ctrl+1…9)"><div class="avatar sm" id="me-avatar">?</div><span id="me-name"></span><span class="caret">▾</span><span id="me-dot" class="dot hidden"></span></button>
+        <div id="acct-menu" class="acct-menu hidden"></div>
         <div class="tools">
+          <button id="b-status" title="דוח מצב: האם הכול עובד?" class="icon">📊</button>
           <button id="b-new" title="שיחה חדשה (Ctrl+N)" class="icon">✎</button>
           <button id="b-settings" title="הגדרות" class="icon">⚙</button>
         </div>
