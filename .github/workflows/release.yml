@@ -28,7 +28,19 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$V" ]; then
             echo "Tag $GITHUB_REF_NAME does not match package.json version $V"; exit 1
           fi
-      - name: Build + publish installer
-        run: npx electron-builder --win --publish always
+      - name: Build installer
+        run: npx electron-builder --win --publish never
+      # one explicit release (electron-builder's own parallel upload can create duplicates)
+      - name: Publish release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V=$(node -p "require('./package.json').version")
+          TAG="v$V"
+          FILES="dist/WA-Bridge-Setup-$V.exe dist/WA-Bridge-Setup-$V.exe.blockmap dist/latest.yml"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $FILES --clobber
+          else
+            gh release create "$TAG" $FILES --target "$GITHUB_SHA" --title "WA Bridge $V" --generate-notes
+          fi

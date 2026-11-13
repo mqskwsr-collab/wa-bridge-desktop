@@ -1,7 +1,7 @@
 {
   "name": "wa-bridge-desktop",
   "productName": "WA Bridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WA Bridge - Windows desktop client (WhatsApp-style chat over the WA Bridge server)",
   "main": "main.js",
   "author": "WA Bridge",
@@ -24,11 +24,29 @@
     "appId": "com.wabridge.desktop",
     "productName": "WA Bridge",
     "copyright": "WA Bridge",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "build/tray*.png", "build/icon.png", "package.json"],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "build/tray*.png",
+      "build/icon.png",
+      "package.json"
+    ],
     "asar": true,
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.ico"
     },
     "nsis": {
@@ -43,7 +61,12 @@
       "artifactName": "WA-Bridge-Setup-${version}.exe"
     },
     "publish": [
-      { "provider": "github", "owner": "mqskwsr-collab", "repo": "wa-bridge-desktop", "releaseType": "release" }
+      {
+        "provider": "github",
+        "owner": "mqskwsr-collab",
+        "repo": "wa-bridge-desktop",
+        "releaseType": "release"
+      }
     ]
   }
 }
