@@ -5,6 +5,7 @@ const os = require('os');
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, shell, dialog, safeStorage, net, session } = require('electron');
 const { Config } = require('./src/config');
 const { createApi, parseLink } = require('./src/api');
+const { applyFeed, friendlyUpdateError } = require('./src/feed');
 
 const DEV = !app.isPackaged;
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -148,7 +149,7 @@ function initUpdater() {
       n.show();
     }
   });
-  autoUpdater.on('error', (e) => setUpdate({ status: 'error', error: String((e && e.message) || e).slice(0, 200) }));
+  autoUpdater.on('error', (e) => setUpdate({ status: 'error', error: friendlyUpdateError(e) }));
   setTimeout(() => checkForUpdates(false), 15 * 1000);
   setInterval(() => checkForUpdates(false), 3 * 3600 * 1000);
 }
@@ -157,11 +158,7 @@ function initUpdater() {
 function configureFeed() {
   const s = config.getSession();
   if (!s) return false;
-  autoUpdater.setFeedURL({
-    provider: 'generic',
-    url: `${s.serverUrl}/api/desk/update`,
-    requestHeaders: { 'x-wab-token': s.token, 'x-wab-device': s.deviceKey },
-  });
+  applyFeed(autoUpdater, s);
   return true;
 }
 
@@ -173,7 +170,7 @@ function checkForUpdates(manual) {
     if (manual && r && r.updateInfo && r.updateInfo.version === app.getVersion() && Notification.isSupported()) {
       new Notification({ title: 'WA Bridge', body: `אתה משתמש בגרסה העדכנית (${app.getVersion()}).` }).show();
     }
-  }).catch((e) => setUpdate({ status: 'error', error: String((e && e.message) || e).slice(0, 200) }));
+  }).catch((e) => setUpdate({ status: 'error', error: friendlyUpdateError(e) }));
 }
 
 function installUpdate() {
