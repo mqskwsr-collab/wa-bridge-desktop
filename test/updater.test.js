@@ -11,8 +11,9 @@ const Module = require('module');
 const fs = require('fs');
 process.resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), 'wab-res-'));
 fs.writeFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'provider: generic\nurl: http://127.0.0.1:1/unused\n');
+const APP = 'wab-updater-test-' + crypto.randomBytes(4).toString('hex'); // own cache dir per run, so a re-run really downloads
 const electronStub = {
-  app: { getVersion: () => '1.0.0', getName: () => 'wa-bridge', name: 'wa-bridge', isPackaged: true, getAppPath: () => process.cwd(), getPath: () => os.tmpdir(), whenReady: () => Promise.resolve(), on() {}, once() {}, quit() {}, userAgentFallback: 'test' },
+  app: { getVersion: () => '1.0.0', getName: () => APP, name: APP, isPackaged: true, getAppPath: () => process.cwd(), getPath: () => os.tmpdir(), whenReady: () => Promise.resolve(), on() {}, once() {}, quit() {}, userAgentFallback: 'test' },
   net: {}, session: {}, BrowserWindow: class {}, autoUpdater: {},
 };
 const load = Module._load;
@@ -79,5 +80,6 @@ const YML = `version: 9.9.9\nfiles:\n  - url: WA-Bridge-Setup-9.9.9.exe\n    sha
   assert.ok(/401/.test(friendlyUpdateError(new Error('401 Unauthorized "method: GET url: ...\n Data: {}')))); assert.ok(!friendlyUpdateError(new Error('x\nsecond line')).includes('second')); ok('update errors are shown as one readable line, not a stack trace');
   console.log(`\n${n} checks passed`);
   server.close();
+  fs.rmSync(path.join(os.homedir(), '.cache', APP), { recursive: true, force: true });
   process.exit(0);
 })().catch((e) => { console.error('FAILED', e); process.exit(1); });
