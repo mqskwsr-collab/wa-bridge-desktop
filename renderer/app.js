@@ -343,7 +343,7 @@
     const [tick, tickTitle] = TICK[m.status] || ['', ''];
     const meta = el('div', { class: 'meta' }, el('span', { text: hhmm(m.at) }));
     if (m.dir === 'out') meta.append(el('span', { class: 'tick ' + m.status, title: tickTitle, text: tick }), el('button', { class: 'info', title: 'איפה ההודעה? (מסלול ואבחון)', text: 'ⓘ', on: { click: () => journeyDialog(m) } }));
-    if (m.dir === 'out' && m.status === 'queued') meta.append(el('button', { text: 'בטל', on: { click: () => cancelMsg(m) } }));
+    if (m.dir === 'out' && (m.status === 'queued' || m.status === 'picked')) meta.append(el('button', { text: 'בטל', on: { click: () => cancelMsg(m) } })); // also while the phone is (still) trying: a stuck message can be taken back
     if (m.dir === 'out' && m.status === 'failed' && m.text && !(m.files || []).length) meta.append(el('button', { text: 'שלח שוב', on: { click: () => resend(c, m.text) } }));
     const files = (m.files || []).map((f) => el('div', { class: 'file' },
       '📎 ',
