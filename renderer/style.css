@@ -134,3 +134,17 @@ input,textarea{font:inherit;color:inherit}
 .tl li.failed::before{background:var(--danger)}.tl li.cancelled::before{background:#9aa5ab}
 .tl .when{color:var(--muted);font-size:12px;direction:ltr;display:block}
 .meta .info{text-decoration:none;font-size:13px;color:var(--muted)}
+
+/* pictures */
+.picbox{margin-bottom:4px}
+.pic{display:block;max-width:100%;max-height:320px;border-radius:8px;cursor:zoom-in;background:var(--panel2)}
+.pic:not([src]){width:220px;height:140px}
+.pic-cap{margin-top:2px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thumb{width:30px;height:30px;object-fit:cover;border-radius:5px}
+.chip{gap:8px}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.lightbox img{max-width:94vw;max-height:82vh;object-fit:contain;border-radius:6px}
+.lb-bar{display:flex;gap:10px;align-items:center;color:#fff}
+.lb-bar .secondary{background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.25)}
+.chat{position:relative}
+.chat.drop::after{content:'שחרר כאן כדי לצרף';position:absolute;inset:8px;border:3px dashed var(--accent);border-radius:14px;background:rgba(18,140,126,.12);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:var(--accent);z-index:6;pointer-events:none}

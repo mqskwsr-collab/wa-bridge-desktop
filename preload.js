@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('wab', {
   switchAccount: (id) => ipcRenderer.invoke('accounts:switch', { id }),
   call: (method, path, body, accountId) => ipcRenderer.invoke('api:call', { method, path, body, accountId }),
   pickFiles: () => ipcRenderer.invoke('file:pick'),
+  media: (id, accountId) => ipcRenderer.invoke('media:get', { id, accountId }),
+  saveMedia: (id, name, accountId) => ipcRenderer.invoke('media:save', { id, name, accountId }),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   setUnread: (n) => ipcRenderer.send('unread:set', n),
   notify: (data) => ipcRenderer.send('notify', data),

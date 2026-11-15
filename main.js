@@ -10,6 +10,7 @@ const { applyFeed, friendlyUpdateError } = require('./src/feed');
 const DEV = !app.isPackaged;
 const START_HIDDEN = process.argv.includes('--hidden');
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', heic: 'image/heic', mp4: 'video/mp4', pdf: 'application/pdf' };
 
 app.setAppUserModelId('com.wabridge.desktop'); // needed for Windows notifications and the taskbar group
 
@@ -228,6 +229,32 @@ function registerIpc() {
     }
   });
 
+  // pictures / files of chat messages: downloaded here (the window has no network access), handed over as base64
+  const MEDIA_ID = /^m[a-f0-9]{24}$/;
+  ipcMain.handle('media:get', async (e, { id, accountId } = {}) => {
+    if (!MEDIA_ID.test(String(id))) return { ok: false, error: 'bad id' };
+    try {
+      const r = await api.download('/api/desk/media/' + id, { accountId });
+      if (r.buffer.length > 15 * 1024 * 1024) return { ok: false, error: 'too large to preview' };
+      return { ok: true, mime: r.contentType.split(';')[0], data: r.buffer.toString('base64') };
+    } catch (err) {
+      return { ok: false, status: err.status || 0, error: err.message };
+    }
+  });
+  ipcMain.handle('media:save', async (e, { id, name, accountId } = {}) => {
+    if (!MEDIA_ID.test(String(id))) return { ok: false, error: 'bad id' };
+    try {
+      const r = await api.download(`/api/desk/media/${id}?download=1`, { accountId, timeoutMs: 120000 });
+      const safe = path.basename(String(name || 'file')).replace(/[<>:"|?*\u0000-\u001f]/g, '_') || 'file';
+      const out = await dialog.showSaveDialog(win, { title: 'שמור קובץ', defaultPath: path.join(app.getPath('downloads'), safe) });
+      if (out.canceled || !out.filePath) return { ok: true, canceled: true };
+      fs.writeFileSync(out.filePath, r.buffer);
+      return { ok: true, path: out.filePath };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('file:pick', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: 'בחר קבצים לשליחה' });
     const files = [];
@@ -236,7 +263,7 @@ function registerIpc() {
       try {
         const st = fs.statSync(f);
         if (st.size > MAX_FILE_BYTES) { skipped.push(`${path.basename(f)} (גדול מ-25MB)`); continue; }
-        files.push({ name: path.basename(f), size: st.size, data: fs.readFileSync(f).toString('base64') });
+        files.push({ name: path.basename(f), size: st.size, mime: MIME_BY_EXT[path.extname(f).slice(1).toLowerCase()] || '', data: fs.readFileSync(f).toString('base64') });
       } catch { skipped.push(path.basename(f)); }
     }
     return { files, skipped };

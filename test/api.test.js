@@ -81,5 +81,15 @@ const ok = (m) => console.log('  ok', ++n, '-', m);
   await assert.rejects(api3.call('GET', '/api/desk/sync', null, { accountId: 'b' }));
   assert.strictEqual(expiredId, 'b'); ok('a 401 reports which account expired');
 
+  // ---- binary download ----
+  const bin = Buffer.from([137, 80, 78, 71, 1, 2, 3]);
+  const dl = createApi({ fetch: async (u, i) => { seen.push({ url: u, init: i }); return { ok: true, status: 200, headers: { get: () => 'image/png' }, arrayBuffer: async () => bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.length) }; }, getSession: () => ({ id: 'a', serverUrl: 'https://s', token: 'tok-1', deviceKey: 'dk' }) });
+  const got = await dl.download('/api/desk/media/m' + 'a'.repeat(24));
+  assert.ok(got.buffer.equals(bin)); assert.strictEqual(got.contentType, 'image/png'); assert.strictEqual(seen[seen.length - 1].init.headers['x-wab-device'], 'dk'); ok('pictures are downloaded as bytes with the device headers');
+  let exp = null;
+  const dl2 = createApi({ fetch: async () => ({ ok: false, status: 401, json: async () => ({ error: 'login' }) }), getSession: () => ({ id: 'z', serverUrl: 'https://s', token: 'tok-1', deviceKey: 'dk' }), onAuthExpired: (id) => { exp = id; } });
+  await assert.rejects(dl2.download('/api/desk/media/x'), (e) => e.status === 401); assert.strictEqual(exp, 'z'); ok('a rejected download signs that account out');
+  await assert.rejects(createApi({ fetch: async () => ({ ok: false, status: 404, json: async () => ({ error: 'not found' }) }), getSession: () => ({ id: 'a', serverUrl: 'https://s', token: 't', deviceKey: 'd' }) }).download('/api/desk/media/x'), (e) => e.status === 404); ok('a picture that is gone gives a clean 404');
+
   console.log(`\n${n} checks passed`);
 })().catch((e) => { console.error('FAILED', e); process.exit(1); });

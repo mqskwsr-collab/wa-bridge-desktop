@@ -46,7 +46,27 @@ function createApi({ fetch, getSession, onAuthExpired }) {
     return data;
   }
 
+  // binary download (pictures / files of a chat message)
+  async function download(path, { accountId, timeoutMs = 60000 } = {}) {
+    const s = getSession(accountId);
+    if (!s || !s.deviceKey) throw new ApiError('login', 401);
+    let res;
+    try {
+      res = await fetch(s.serverUrl + path, { method: 'GET', headers: { 'x-wab-token': s.token, 'x-wab-device': s.deviceKey }, signal: AbortSignal.timeout(timeoutMs) });
+    } catch {
+      throw new ApiError('אין חיבור לשרת', 0);
+    }
+    if (!res.ok) {
+      let data = null;
+      try { data = await res.json(); } catch { /* not json */ }
+      if (res.status === 401 && onAuthExpired) onAuthExpired(s.id);
+      throw new ApiError((data && data.error) || `שגיאת שרת (${res.status})`, res.status, data);
+    }
+    return { buffer: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') || '' };
+  }
+
   return {
+    download,
     async login({ serverUrl, token, password, code, deviceName }) {
       return request('POST', serverUrl, '/api/desk/login', { body: { token, password, code, deviceName }, timeoutMs: 70000 });
     },

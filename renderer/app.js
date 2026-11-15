@@ -8,7 +8,7 @@
   const S = {
     info: null, convs: new Map(), msgs: new Map(), seen: new Set(), done: new Set(), drafts: new Map(),
     active: null, cursor: 0, phoneLastPollAt: 0, skew: 0, online: true, search: '', pendingFiles: [], loadingOlder: false, retentionDays: 30,
-    gen: 0, activeId: null, acctSummary: {}, addMode: false,
+    gen: 0, activeId: null, acctSummary: {}, addMode: false, mediaSrc: new Map(), mediaPending: new Map(),
   };
 
   // ------------------------------------------------------------ helpers
@@ -127,7 +127,7 @@
     running = true;
     S.gen++;
     S.activeId = S.info.activeId;
-    S.active = null; S.cursor = 0; S.search = ''; S.pendingFiles = [];
+    S.active = null; S.cursor = 0; S.search = ''; S.pendingFiles = []; S.mediaSrc.clear(); S.mediaPending.clear();
     $('#search').value = '';
     show('#chat', false); show('#empty');
     show('#banner', false);
@@ -348,11 +348,7 @@
     if (m.dir === 'out') meta.append(el('span', { class: 'tick ' + m.status, title: tickTitle, text: tick }), el('button', { class: 'info', title: 'איפה ההודעה? (מסלול ואבחון)', text: 'ⓘ', on: { click: () => journeyDialog(m) } }));
     if (m.dir === 'out' && (m.status === 'queued' || m.status === 'picked')) meta.append(el('button', { text: 'בטל', on: { click: () => cancelMsg(m) } })); // also while the phone is (still) trying: a stuck message can be taken back
     if (m.dir === 'out' && m.status === 'failed' && m.text && !(m.files || []).length) meta.append(el('button', { text: 'שלח שוב', on: { click: () => resend(c, m.text) } }));
-    const files = (m.files || []).map((f) => el('div', { class: 'file' },
-      '📎 ',
-      f.url && /^https?:\/\//.test(f.url) ? el('a', { href: f.url, target: '_blank', rel: 'noopener noreferrer', text: f.name }) : el('span', { text: f.name }),
-      f.size ? ` (${fmtSize(f.size)})` : '',
-      m.dir === 'in' && !f.url ? el('div', { class: 'sub', text: 'נשלח אליך במייל' }) : null));
+    const files = (m.files || []).map((f) => renderFile(f, m));
     return el('div', { class: 'msg ' + m.dir, 'data-id': m.id }, el('div', { class: 'bubble' }, ...files, m.text ? el('div', { class: 'text', dir: 'auto' }, ...linkify(m.text)) : null, meta));
   }
 
@@ -369,6 +365,63 @@
       d.messages.forEach((m) => { S.seen.add(m.id); upsert(list, m); });
       if (S.active === k) { renderThread(false); box.scrollTop = box.scrollHeight - before; }
     } catch { /* try again on the next scroll */ } finally { S.loadingOlder = false; }
+  }
+
+  // ------------------------------------------------------------ pictures and files
+  const IMG_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
+  const isImage = (mime) => IMG_MIMES.has(String(mime || '').toLowerCase());
+
+  // downloads through the main process (this window has no network access); results are cached
+  function getMediaSrc(id) {
+    if (S.mediaSrc.has(id)) return Promise.resolve(S.mediaSrc.get(id));
+    if (!S.mediaPending.has(id)) {
+      const p = wab.media(id, S.activeId).then((r) => (r && r.ok ? `data:${r.mime || 'image/png'};base64,${r.data}` : null)).catch(() => null).then((src) => {
+        S.mediaPending.delete(id);
+        if (src) { S.mediaSrc.set(id, src); if (S.mediaSrc.size > 60) S.mediaSrc.delete(S.mediaSrc.keys().next().value); }
+        return src;
+      });
+      S.mediaPending.set(id, p);
+    }
+    return S.mediaPending.get(id);
+  }
+
+  function fileChip(f, note) {
+    return el('div', { class: 'file' }, '📎 ', f.url && /^https?:\/\//.test(f.url) ? el('a', { href: f.url, target: '_blank', rel: 'noopener noreferrer', text: f.name }) : el('span', { dir: 'auto', text: f.name }),
+      f.size ? ` (${fmtSize(f.size)})` : '', f.mediaId ? el('button', { class: 'link', style: 'margin-inline-start:8px', text: 'שמור', on: { click: () => saveFile(f) } }) : null,
+      note ? el('div', { class: 'sub', text: note }) : null);
+  }
+
+  function renderFile(f, m) {
+    if (f.mediaId && isImage(f.mime)) {
+      const img = el('img', { class: 'pic', alt: f.name, title: f.name + ' (לחץ להגדלה)' });
+      const box = el('div', { class: 'picbox' }, img);
+      const load = () => getMediaSrc(f.mediaId).then((src) => {
+        if (src) { img.src = src; img.addEventListener('click', () => lightbox(f, src)); }
+        else box.replaceWith(fileChip(f, 'התמונה כבר לא שמורה בשרת'));
+      });
+      if (S.mediaSrc.has(f.mediaId)) { img.src = S.mediaSrc.get(f.mediaId); img.addEventListener('click', () => lightbox(f, img.src)); }
+      else if (typeof IntersectionObserver === 'function') {
+        const io = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(); } }, { root: $('#thread') });
+        setTimeout(() => io.observe(img), 0);
+      } else load();
+      return box;
+    }
+    if (f.mediaId) return fileChip(f);
+    return fileChip(f, m.dir === 'in' && !f.url ? 'נשלח אליך במייל' : '');
+  }
+
+  function lightbox(f, src) {
+    $('#lb-img').src = src;
+    $('#lb-name').textContent = f.name;
+    $('#lb-save').onclick = () => saveFile(f);
+    show('#lightbox');
+  }
+  const closeLightbox = () => { show('#lightbox', false); $('#lb-img').removeAttribute('src'); };
+
+  async function saveFile(f) {
+    const r = await wab.saveMedia(f.mediaId, f.name, S.activeId);
+    if (r && r.ok && !r.canceled) toast('נשמר: ' + r.path);
+    else if (r && !r.ok) toast('השמירה נכשלה: ' + r.error, 'error');
   }
 
   // ------------------------------------------------------------ sending
@@ -423,10 +476,45 @@
   function renderChips() {
     const box = $('#chips');
     box.classList.toggle('hidden', !S.pendingFiles.length);
-    box.replaceChildren(...S.pendingFiles.map((f, i) => el('span', { class: 'chip' }, `${f.name} (${fmtSize(f.size)})`, el('button', { title: 'הסר', text: '×', on: { click: () => { S.pendingFiles.splice(i, 1); renderChips(); } } }))));
+    box.replaceChildren(...S.pendingFiles.map((f, i) => el('span', { class: 'chip' },
+      isImage(f.mime) ? el('img', { class: 'thumb', alt: '', src: `data:${f.mime};base64,${f.data}` }) : null,
+      `${f.name} (${fmtSize(f.size)})`, el('button', { title: 'הסר', text: '×', on: { click: () => { S.pendingFiles.splice(i, 1); renderChips(); } } }))));
+  }
+
+  // pictures / files can only go to a contact that has a phone number (the phone sends them through the number)
+  function canSendFiles() {
+    const c = S.convs.get(S.active);
+    if (c && c.type === 'private' && c.phone) return true;
+    toast('אפשר לשלוח תמונות וקבצים רק לאיש קשר עם מספר טלפון (לא לקבוצה, ולא לשיחה שהתחילה בוואטסאפ בלי מספר, כמו Meta AI)', 'error');
+    return false;
+  }
+
+  // File objects from paste / drag and drop
+  const readAsBase64 = (file) => new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+  async function addFiles(fileList) {
+    if (!canSendFiles()) return;
+    const skipped = [];
+    for (const file of [...fileList]) {
+      if (S.pendingFiles.length >= 12) { skipped.push(file.name + ' (עד 12 קבצים בהודעה)'); continue; }
+      if (file.size > 25 * 1024 * 1024) { skipped.push(file.name + ' (גדול מ-25MB)'); continue; }
+      const mime = file.type || '';
+      const t = new Date();
+      const ext = (mime.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      const name = file.name && file.name !== 'image.png' ? file.name : `תמונה-${String(t.getHours()).padStart(2, '0')}${String(t.getMinutes()).padStart(2, '0')}${String(t.getSeconds()).padStart(2, '0')}.${ext}`;
+      try { S.pendingFiles.push({ name, size: file.size, mime, data: await readAsBase64(file) }); } catch { skipped.push(name); }
+    }
+    renderChips();
+    if (skipped.length) toast('לא צורפו: ' + skipped.join('; '), 'error');
+    $('#input').focus();
   }
 
   async function attach() {
+    if (!canSendFiles()) return;
     const r = await wab.pickFiles();
     if (r.skipped && r.skipped.length) toast('לא צורפו: ' + r.skipped.join('; '), 'error');
     S.pendingFiles.push(...r.files);
@@ -668,10 +756,22 @@
     $('#b-emoji').addEventListener('click', (e) => { e.stopPropagation(); emoji.classList.toggle('hidden'); });
     document.addEventListener('click', (e) => { if (!emoji.contains(e.target)) emoji.classList.add('hidden'); });
     const input = $('#input');
+    input.addEventListener('paste', (e) => {
+      const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+      if (files.length) { e.preventDefault(); addFiles(files); }
+    });
+    const chat = $('#chat');
+    let dragDepth = 0;
+    chat.addEventListener('dragenter', (e) => { if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files')) { dragDepth++; chat.classList.add('drop'); } });
+    chat.addEventListener('dragover', (e) => e.preventDefault());
+    chat.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) chat.classList.remove('drop'); });
+    chat.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; chat.classList.remove('drop'); if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files); });
+    $('#lb-close').addEventListener('click', closeLightbox);
+    $('#lightbox').addEventListener('mousedown', (e) => { if (e.target.id === 'lightbox') closeLightbox(); });
     input.addEventListener('input', autoGrow);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(); } });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { closeDialog(); emoji.classList.add('hidden'); }
+      if (e.key === 'Escape') { closeLightbox(); closeDialog(); emoji.classList.add('hidden'); }
       if (e.ctrlKey && e.key.toLowerCase() === 'n' && S.info.loggedIn !== false && running) { e.preventDefault(); newChatDialog(); }
       if (e.ctrlKey && e.key.toLowerCase() === 'k' && running) { e.preventDefault(); $('#search').focus(); }
       if (e.ctrlKey && /^[1-9]$/.test(e.key) && running) { const a = S.info.accounts[Number(e.key) - 1]; if (a) { e.preventDefault(); switchAccount(a.id); } }
