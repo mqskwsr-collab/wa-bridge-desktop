@@ -1,7 +1,7 @@
 {
   "name": "wa-bridge-desktop",
   "productName": "WA Bridge",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "WA Bridge - Windows desktop client (WhatsApp-style chat over the WA Bridge server)",
   "main": "main.js",
   "author": "WA Bridge",

@@ -8,7 +8,7 @@
   const S = {
     info: null, convs: new Map(), msgs: new Map(), seen: new Set(), done: new Set(), drafts: new Map(),
     active: null, cursor: 0, phoneLastPollAt: 0, skew: 0, online: true, search: '', pendingFiles: [], loadingOlder: false, retentionDays: 30,
-    gen: 0, activeId: null, acctSummary: {}, addMode: false, mediaSrc: new Map(), mediaPending: new Map(),
+    gen: 0, activeId: null, acctSummary: {}, addMode: false, mediaSrc: new Map(), mediaPending: new Map(), blobUrl: new Map(), msgNodes: new Map(), dayNodes: new Map(),
   };
 
   // ------------------------------------------------------------ helpers
@@ -127,7 +127,7 @@
     running = true;
     S.gen++;
     S.activeId = S.info.activeId;
-    S.active = null; S.cursor = 0; S.search = ''; S.pendingFiles = []; S.mediaSrc.clear(); S.mediaPending.clear();
+    S.active = null; S.cursor = 0; S.search = ''; S.pendingFiles = []; S.msgNodes.clear(); S.dayNodes.clear(); S.mediaSrc.clear(); S.mediaPending.clear(); for (const u of S.blobUrl.values()) URL.revokeObjectURL(u); S.blobUrl.clear();
     $('#search').value = '';
     show('#chat', false); show('#empty');
     show('#banner', false);
@@ -289,6 +289,7 @@
     const gen = S.gen;
     if (S.active) S.drafts.set(S.activeId + '|' + S.active, $('#input').value);
     S.active = k;
+    S.msgNodes.clear(); S.dayNodes.clear();
     S.pendingFiles = [];
     renderChips();
     const c = S.convs.get(k);
@@ -335,11 +336,37 @@
     let day = '';
     for (const m of list) {
       const d = dayLabel(m.at);
-      if (d !== day) { day = d; kids.push(el('div', { class: 'day', text: d })); }
-      kids.push(renderMsg(m, c));
+      if (d !== day) {
+        day = d;
+        if (!S.dayNodes.has(d)) S.dayNodes.set(d, el('div', { class: 'day', text: d }));
+        kids.push(S.dayNodes.get(d));
+      }
+      kids.push(msgNode(m, c));
     }
-    box.replaceChildren(...kids);
+    reconcile(box, kids);
     if (toEnd || atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  // A message that did not change keeps its DOM node, so a voice note or video that is playing is NOT interrupted when another
+  // message arrives (re-building the whole thread used to stop it).
+  function msgNode(m, c) {
+    const sig = [m.status, m.text, (m.files || []).map((f) => f.mediaId || f.name).join(',')].join('|');
+    const hit = S.msgNodes.get(m.id);
+    if (hit && hit.sig === sig) return hit.node;
+    const node = renderMsg(m, c);
+    S.msgNodes.set(m.id, { sig, node });
+    return node;
+  }
+
+  // puts `desired` into `box` touching as little as possible (moving a playing <audio>/<video> would pause it)
+  function reconcile(box, desired) {
+    const want = new Set(desired);
+    for (const n of [...box.childNodes]) if (!want.has(n)) box.removeChild(n);
+    let ref = box.firstChild;
+    for (const n of desired) {
+      if (n === ref) { ref = ref.nextSibling; continue; }
+      box.insertBefore(n, ref);
+    }
   }
 
   function renderMsg(m, c) {
@@ -370,6 +397,64 @@
   // ------------------------------------------------------------ pictures and files
   const IMG_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
   const isImage = (mime) => IMG_MIMES.has(String(mime || '').toLowerCase());
+  const AUDIO_EXT = /\.(opus|ogg|oga|m4a|aac|mp3|wav|amr)$/i;
+  const VIDEO_EXT = /\.(mp4|m4v|mov|webm|3gp)$/i;
+  const kindOf = (f) => {
+    const m = String(f.mime || '').toLowerCase();
+    if (isImage(m)) return 'image';
+    if (m.startsWith('audio/') || AUDIO_EXT.test(f.name || '')) return 'audio';
+    if (m.startsWith('video/') || VIDEO_EXT.test(f.name || '')) return 'video';
+    return 'file';
+  };
+  const blobMime = (f, kind) => {
+    const n = String(f.name || '').toLowerCase();
+    if (/\.(opus|ogg|oga)$/.test(n) || f.mime === 'audio/ogg') return 'audio/ogg; codecs=opus'; // WhatsApp voice notes
+    if (/\.m4a$/.test(n)) return 'audio/mp4';
+    return f.mime || (kind === 'audio' ? 'audio/mpeg' : 'video/mp4');
+  };
+
+  // voice notes and videos: downloaded when the play button is pressed, then played from a local blob
+  async function getBlobUrl(f, kind) {
+    if (S.blobUrl.has(f.mediaId)) return S.blobUrl.get(f.mediaId);
+    const r = await wab.media(f.mediaId, S.activeId);
+    if (!r || !r.ok) return null;
+    const bin = atob(r.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: blobMime(f, kind) }));
+    S.blobUrl.set(f.mediaId, url);
+    while (S.blobUrl.size > 6) { const [k0, u0] = S.blobUrl.entries().next().value; URL.revokeObjectURL(u0); S.blobUrl.delete(k0); }
+    return url;
+  }
+  function playerFailed(box, f, why) {
+    box.replaceWith(fileChip(f, why));
+  }
+  function audioPlayer(f) {
+    const label = el('span', { text: `🎤 הקלטה · ${fmtSize(f.size || 0)}` });
+    const btn = el('button', { class: 'play', title: 'השמע', text: '▶' });
+    const box = el('div', { class: 'player' }, btn, label);
+    btn.addEventListener('click', async () => {
+      btn.disabled = true; btn.textContent = '…';
+      const url = await getBlobUrl(f, 'audio').catch(() => null);
+      if (!url) return playerFailed(box, f, 'ההקלטה כבר לא שמורה בשרת');
+      const a = el('audio', { controls: true, autoplay: true, src: url });
+      a.addEventListener('error', () => playerFailed(box, f, 'אי אפשר להשמיע את הפורמט הזה כאן, אפשר לשמור'));
+      box.replaceChildren(a);
+    });
+    return box;
+  }
+  function videoPlayer(f) {
+    const box = el('div', { class: 'vbox', title: f.name }, el('div', { class: 'big', text: '▶' }), el('div', { class: 'sub', dir: 'auto', text: `🎥 ${f.name} · ${fmtSize(f.size || 0)}` }));
+    box.addEventListener('click', async () => {
+      box.querySelector('.big').textContent = '…';
+      const url = await getBlobUrl(f, 'video').catch(() => null);
+      if (!url) return playerFailed(box, f, 'הסרטון כבר לא שמור בשרת');
+      const v = el('video', { class: 'vid', controls: true, autoplay: true, playsinline: true, src: url });
+      v.addEventListener('error', () => playerFailed(v, f, 'אי אפשר להפעיל את הפורמט הזה כאן, אפשר לשמור'));
+      box.replaceWith(v);
+    }, { once: true });
+    return box;
+  }
 
   // downloads through the main process (this window has no network access); results are cached
   function getMediaSrc(id) {
@@ -392,8 +477,10 @@
   }
 
   function renderFile(f, m) {
+    if (f.mediaId && kindOf(f) === 'audio') return audioPlayer(f);
+    if (f.mediaId && kindOf(f) === 'video') return videoPlayer(f);
     if (f.mediaId && isImage(f.mime)) {
-      const img = el('img', { class: 'pic', alt: f.name, title: f.name + ' (לחץ להגדלה)' });
+      const img = el('img', { class: 'pic' + (/^STK-/i.test(f.name || '') ? ' sticker' : ''), alt: f.name, title: f.name + ' (לחץ להגדלה)' });
       const box = el('div', { class: 'picbox' }, img);
       const load = () => getMediaSrc(f.mediaId).then((src) => {
         if (src) { img.src = src; img.addEventListener('click', () => lightbox(f, src)); }

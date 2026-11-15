@@ -235,7 +235,7 @@ function registerIpc() {
     if (!MEDIA_ID.test(String(id))) return { ok: false, error: 'bad id' };
     try {
       const r = await api.download('/api/desk/media/' + id, { accountId });
-      if (r.buffer.length > 15 * 1024 * 1024) return { ok: false, error: 'too large to preview' };
+      if (r.buffer.length > 20 * 1024 * 1024) return { ok: false, error: 'too large to preview' };
       return { ok: true, mime: r.contentType.split(';')[0], data: r.buffer.toString('base64') };
     } catch (err) {
       return { ok: false, status: err.status || 0, error: err.message };
