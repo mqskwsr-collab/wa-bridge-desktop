@@ -43,6 +43,8 @@
     toastTimer = setTimeout(() => t.classList.add('hidden'), kind === 'error' ? 6000 : 3000);
   }
 
+  // a name that is a phone number ("+972 54-220-3610") must read left-to-right, or the + jumps to the end in a Hebrew UI
+  const nameDir = (n) => (/^[\s+\d\-()\u200E\u200F\u202A-\u202E]+$/.test(String(n || '')) ? 'ltr' : 'auto');
   const colorOf = (s) => { let h = 0; for (const ch of s) h = (h * 31 + ch.codePointAt(0)) % 360; return `hsl(${h} 45% 45%)`; };
   const initial = (c) => (c.type === 'group' ? '👥' : (Array.from((c.name || '?').trim())[0] || '?').toUpperCase());
   function avatar(c, small) { return el('div', { class: 'avatar' + (small ? ' sm' : ''), style: `background:${colorOf(c.name)}`, text: initial(c) }); }
@@ -277,7 +279,7 @@
       return el('div', { class: 'conv' + (k === S.active ? ' active' : ''), 'data-key': k, on: { click: () => openConv(k) } },
         avatar(c),
         el('div', { class: 'conv-main' },
-          el('div', { class: 'row1' }, el('span', { class: 'name', text: c.name }), el('span', { class: 'time' + (c.unread ? ' unread' : ''), text: listTime(c.lastAt) })),
+          el('div', { class: 'row1' }, el('span', { class: 'name', dir: nameDir(c.name), text: c.name }), el('span', { class: 'time' + (c.unread ? ' unread' : ''), text: listTime(c.lastAt) })),
           el('div', { class: 'row2' }, el('span', { class: 'preview', dir: 'auto', text: preview }), c.unread ? el('span', { class: 'badge', text: c.unread > 99 ? '99+' : String(c.unread) }) : null)));
     }));
   }
@@ -295,6 +297,7 @@
     show('#chat');
     $('#c-avatar').replaceWith(Object.assign(avatar(c), { id: 'c-avatar' }));
     $('#c-name').textContent = c.name;
+    $('#c-name').setAttribute('dir', nameDir(c.name));
     $('#c-sub').textContent = c.type === 'group' ? 'קבוצה (הודעות טקסט בלבד)' : c.phone ? '+' + c.phone : 'ללא מספר טלפון (ניתן להשיב רק לשיחות שהתחילו בוואטסאפ)';
     $('#input').value = S.drafts.get(S.activeId + '|' + k) || '';
     autoGrow();
