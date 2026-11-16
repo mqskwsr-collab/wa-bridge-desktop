@@ -413,18 +413,27 @@
     return f.mime || (kind === 'audio' ? 'audio/mpeg' : 'video/mp4');
   };
 
-  // voice notes and videos: downloaded when the play button is pressed, then played from a local blob
+  // voice notes and videos: downloaded when the play button is pressed, then played from a local blob.
+  // Result: {url} | {altered:true} (a content filter replaced the file) | {gone:true}
   async function getBlobUrl(f, kind) {
-    if (S.blobUrl.has(f.mediaId)) return S.blobUrl.get(f.mediaId);
-    const r = await wab.media(f.mediaId, S.activeId);
-    if (!r || !r.ok) return null;
+    if (S.blobUrl.has(f.mediaId)) return { url: S.blobUrl.get(f.mediaId) };
+    const r = await wab.media(f.mediaId, S.activeId, { sha256: f.sha256, size: f.size });
+    if (r && r.altered) return { altered: true };
+    if (!r || !r.ok) return { gone: true };
     const bin = atob(r.data);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const url = URL.createObjectURL(new Blob([bytes], { type: blobMime(f, kind) }));
     S.blobUrl.set(f.mediaId, url);
     while (S.blobUrl.size > 6) { const [k0, u0] = S.blobUrl.entries().next().value; URL.revokeObjectURL(u0); S.blobUrl.delete(k0); }
-    return url;
+    return { url };
+  }
+  // the file was swapped on the way (a content filter such as NetFree checks it first): say so and let the user try again
+  function filterBox(f, again) {
+    return el('div', { class: 'pic-wait' }, el('div', { class: 'ico', text: '⏳' }),
+      el('div', { text: 'מסנן התוכן (למשל נטפרי) עדיין בודק את הקובץ הזה. נסה שוב בעוד כמה דקות.' }),
+      el('div', { class: 'sub', text: 'הוא נשלח אליך גם במייל.' }),
+      el('button', { class: 'link', text: 'נסה שוב', on: { click: (e) => e.target.closest('.pic-wait').replaceWith(again()) } }));
   }
   function playerFailed(box, f, why) {
     box.replaceWith(fileChip(f, why));
@@ -435,9 +444,10 @@
     const box = el('div', { class: 'player' }, btn, label);
     btn.addEventListener('click', async () => {
       btn.disabled = true; btn.textContent = '…';
-      const url = await getBlobUrl(f, 'audio').catch(() => null);
-      if (!url) return playerFailed(box, f, 'ההקלטה כבר לא שמורה בשרת');
-      const a = el('audio', { controls: true, autoplay: true, src: url });
+      const res = await getBlobUrl(f, 'audio').catch(() => ({ gone: true }));
+      if (res.altered) return box.replaceWith(filterBox(f, () => audioPlayer(f)));
+      if (!res.url) return playerFailed(box, f, 'ההקלטה כבר לא שמורה בשרת');
+      const a = el('audio', { controls: true, autoplay: true, src: res.url });
       a.addEventListener('error', () => playerFailed(box, f, 'אי אפשר להשמיע את הפורמט הזה כאן, אפשר לשמור'));
       box.replaceChildren(a);
     });
@@ -447,24 +457,30 @@
     const box = el('div', { class: 'vbox', title: f.name }, el('div', { class: 'big', text: '▶' }), el('div', { class: 'sub', dir: 'auto', text: `🎥 ${f.name} · ${fmtSize(f.size || 0)}` }));
     box.addEventListener('click', async () => {
       box.querySelector('.big').textContent = '…';
-      const url = await getBlobUrl(f, 'video').catch(() => null);
-      if (!url) return playerFailed(box, f, 'הסרטון כבר לא שמור בשרת');
-      const v = el('video', { class: 'vid', controls: true, autoplay: true, playsinline: true, src: url });
+      const res = await getBlobUrl(f, 'video').catch(() => ({ gone: true }));
+      if (res.altered) return box.replaceWith(filterBox(f, () => videoPlayer(f)));
+      if (!res.url) return playerFailed(box, f, 'הסרטון כבר לא שמור בשרת');
+      const v = el('video', { class: 'vid', controls: true, autoplay: true, playsinline: true, src: res.url });
       v.addEventListener('error', () => playerFailed(v, f, 'אי אפשר להפעיל את הפורמט הזה כאן, אפשר לשמור'));
       box.replaceWith(v);
     }, { once: true });
     return box;
   }
 
-  // downloads through the main process (this window has no network access); results are cached
-  function getMediaSrc(id) {
-    if (S.mediaSrc.has(id)) return Promise.resolve(S.mediaSrc.get(id));
+  // downloads through the main process (this window has no network access); only REAL pictures are cached.
+  // Result: {src} | {altered:true} (stand-in from a content filter) | {gone:true}
+  function getMediaSrc(f) {
+    const id = f.mediaId;
+    if (S.mediaSrc.has(id)) return Promise.resolve({ src: S.mediaSrc.get(id) });
     if (!S.mediaPending.has(id)) {
-      const p = wab.media(id, S.activeId).then((r) => (r && r.ok ? `data:${r.mime || 'image/png'};base64,${r.data}` : null)).catch(() => null).then((src) => {
-        S.mediaPending.delete(id);
-        if (src) { S.mediaSrc.set(id, src); if (S.mediaSrc.size > 60) S.mediaSrc.delete(S.mediaSrc.keys().next().value); }
-        return src;
-      });
+      const p = wab.media(id, S.activeId, { sha256: f.sha256, size: f.size })
+        .then((r) => (r && r.ok ? { src: `data:${r.mime || 'image/png'};base64,${r.data}` } : r && r.altered ? { altered: true } : { gone: true }))
+        .catch(() => ({ gone: true }))
+        .then((res) => {
+          S.mediaPending.delete(id);
+          if (res.src) { S.mediaSrc.set(id, res.src); if (S.mediaSrc.size > 60) S.mediaSrc.delete(S.mediaSrc.keys().next().value); }
+          return res;
+        });
       S.mediaPending.set(id, p);
     }
     return S.mediaPending.get(id);
@@ -476,23 +492,41 @@
       note ? el('div', { class: 'sub', text: note }) : null);
   }
 
+  // After NetFree (or any filter) has checked a picture, the same address returns the real one: so a stand-in is never shown
+  // as the picture; the app waits and asks again (20 s, 40 s, 80 s ... up to about 50 minutes), or when the user presses the button.
+  const RETRY_MS = window.__wabRetryMs || [20000, 40000, 80000, 160000, 300000, 600000, 900000, 900000];
+  function pictureBox(f) {
+    const box = el('div', { class: 'picbox' }, el('img', { class: 'pic' + (/^STK-/i.test(f.name || '') ? ' sticker' : ''), alt: f.name }));
+    const showImg = (src) => {
+      const img = el('img', { class: 'pic' + (/^STK-/i.test(f.name || '') ? ' sticker' : ''), alt: f.name, title: f.name + ' (לחץ להגדלה)', src });
+      img.addEventListener('click', () => lightbox(f, src));
+      box.replaceChildren(img);
+    };
+    const waiting = (attempt) => {
+      const last = attempt >= RETRY_MS.length;
+      box.replaceChildren(el('div', { class: 'pic-wait' }, el('div', { class: 'ico', text: last ? '⚠' : '⏳' }),
+        el('div', { text: last ? 'מסנן התוכן עדיין לא אישר את התמונה הזו.' : 'התמונה ממתינה לבדיקה של מסנן התוכן (למשל נטפרי). ננסה שוב אוטומטית.' }),
+        el('div', { class: 'sub', text: 'היא נשלחה אליך גם במייל.' }),
+        el('button', { class: 'link', text: 'נסה שוב עכשיו', on: { click: () => { clearTimeout(box._retry); load(0); } } })));
+      if (!last) box._retry = setTimeout(() => { if (document.body.contains(box)) load(attempt + 1); }, RETRY_MS[attempt]);
+    };
+    const load = (attempt) => getMediaSrc(f).then((res) => {
+      if (res.src) return showImg(res.src);
+      if (res.altered) return waiting(attempt);
+      box.replaceWith(fileChip(f, 'התמונה כבר לא שמורה בשרת'));
+    });
+    if (S.mediaSrc.has(f.mediaId)) showImg(S.mediaSrc.get(f.mediaId));
+    else if (typeof IntersectionObserver === 'function') {
+      const io = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(0); } }, { root: $('#thread') });
+      setTimeout(() => io.observe(box), 0);
+    } else load(0);
+    return box;
+  }
+
   function renderFile(f, m) {
     if (f.mediaId && kindOf(f) === 'audio') return audioPlayer(f);
     if (f.mediaId && kindOf(f) === 'video') return videoPlayer(f);
-    if (f.mediaId && isImage(f.mime)) {
-      const img = el('img', { class: 'pic' + (/^STK-/i.test(f.name || '') ? ' sticker' : ''), alt: f.name, title: f.name + ' (לחץ להגדלה)' });
-      const box = el('div', { class: 'picbox' }, img);
-      const load = () => getMediaSrc(f.mediaId).then((src) => {
-        if (src) { img.src = src; img.addEventListener('click', () => lightbox(f, src)); }
-        else box.replaceWith(fileChip(f, 'התמונה כבר לא שמורה בשרת'));
-      });
-      if (S.mediaSrc.has(f.mediaId)) { img.src = S.mediaSrc.get(f.mediaId); img.addEventListener('click', () => lightbox(f, img.src)); }
-      else if (typeof IntersectionObserver === 'function') {
-        const io = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(); } }, { root: $('#thread') });
-        setTimeout(() => io.observe(img), 0);
-      } else load();
-      return box;
-    }
+    if (f.mediaId && isImage(f.mime)) return pictureBox(f);
     if (f.mediaId) return fileChip(f);
     return fileChip(f, m.dir === 'in' && !f.url ? 'נשלח אליך במייל' : '');
   }
@@ -506,7 +540,7 @@
   const closeLightbox = () => { show('#lightbox', false); $('#lb-img').removeAttribute('src'); };
 
   async function saveFile(f) {
-    const r = await wab.saveMedia(f.mediaId, f.name, S.activeId);
+    const r = await wab.saveMedia(f.mediaId, f.name, S.activeId, { sha256: f.sha256, size: f.size });
     if (r && r.ok && !r.canceled) toast('נשמר: ' + r.path);
     else if (r && !r.ok) toast('השמירה נכשלה: ' + r.error, 'error');
   }

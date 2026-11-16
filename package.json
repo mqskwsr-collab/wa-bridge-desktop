@@ -1,7 +1,7 @@
 {
   "name": "wa-bridge-desktop",
   "productName": "WA Bridge",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "WA Bridge - Windows desktop client (WhatsApp-style chat over the WA Bridge server)",
   "main": "main.js",
   "author": "WA Bridge",
@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node test/api.test.js && node test/updater.test.js",
+    "test": "node test/api.test.js && node test/updater.test.js && node test/mediacheck.test.js",
     "dist": "electron-builder --win",
     "release": "electron-builder --win --publish always"
   },

@@ -158,3 +158,7 @@ input,textarea{font:inherit;color:inherit}
 .vbox .big{font-size:38px;line-height:1}
 .vbox .sub{color:#c7d2d8}
 video.vid{display:block;max-width:100%;max-height:340px;border-radius:10px;background:#000;margin-bottom:4px}
+
+/* a file that a content filter is still checking */
+.pic-wait{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center;min-width:220px;max-width:300px;padding:14px 12px;border-radius:10px;background:rgba(245,159,0,.12);border:1px dashed #f59f00;margin-bottom:4px}
+.pic-wait .ico{font-size:26px;line-height:1}

@@ -5,6 +5,7 @@ const os = require('os');
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, shell, dialog, safeStorage, net, session } = require('electron');
 const { Config } = require('./src/config');
 const { createApi, parseLink } = require('./src/api');
+const { verifyMedia } = require('./src/mediaCheck');
 const { applyFeed, friendlyUpdateError } = require('./src/feed');
 
 const DEV = !app.isPackaged;
@@ -231,20 +232,23 @@ function registerIpc() {
 
   // pictures / files of chat messages: downloaded here (the window has no network access), handed over as base64
   const MEDIA_ID = /^m[a-f0-9]{24}$/;
-  ipcMain.handle('media:get', async (e, { id, accountId } = {}) => {
+  ipcMain.handle('media:get', async (e, { id, accountId, expect } = {}) => {
     if (!MEDIA_ID.test(String(id))) return { ok: false, error: 'bad id' };
     try {
       const r = await api.download('/api/desk/media/' + id, { accountId });
+      const v = verifyMedia(r.buffer, expect || {}, r.sha256); // a content filter may have put a stand-in picture in its place
+      if (!v.ok) return { ok: false, altered: true, error: 'הקובץ הוחלף בדרך (מסנן תוכן?)' };
       if (r.buffer.length > 20 * 1024 * 1024) return { ok: false, error: 'too large to preview' };
       return { ok: true, mime: r.contentType.split(';')[0], data: r.buffer.toString('base64') };
     } catch (err) {
       return { ok: false, status: err.status || 0, error: err.message };
     }
   });
-  ipcMain.handle('media:save', async (e, { id, name, accountId } = {}) => {
+  ipcMain.handle('media:save', async (e, { id, name, accountId, expect } = {}) => {
     if (!MEDIA_ID.test(String(id))) return { ok: false, error: 'bad id' };
     try {
       const r = await api.download(`/api/desk/media/${id}?download=1`, { accountId, timeoutMs: 120000 });
+      if (!verifyMedia(r.buffer, expect || {}, r.sha256).ok) return { ok: false, error: 'הקובץ הוחלף בדרך (מסנן תוכן?), לא נשמר. נסה שוב בעוד כמה דקות.' };
       const safe = path.basename(String(name || 'file')).replace(/[<>:"|?*\u0000-\u001f]/g, '_') || 'file';
       const out = await dialog.showSaveDialog(win, { title: 'שמור קובץ', defaultPath: path.join(app.getPath('downloads'), safe) });
       if (out.canceled || !out.filePath) return { ok: true, canceled: true };

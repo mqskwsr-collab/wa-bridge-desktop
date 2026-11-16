@@ -62,7 +62,7 @@ function createApi({ fetch, getSession, onAuthExpired }) {
       if (res.status === 401 && onAuthExpired) onAuthExpired(s.id);
       throw new ApiError((data && data.error) || `שגיאת שרת (${res.status})`, res.status, data);
     }
-    return { buffer: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') || '' };
+    return { buffer: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') || '', sha256: res.headers.get('x-media-sha256') || '' };
   }
 
   return {
