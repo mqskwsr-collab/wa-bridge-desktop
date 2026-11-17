@@ -63,7 +63,7 @@ const ok = (m) => console.log('  ok', ++n, '-', m);
   assert.strictEqual(c.getActiveId(), a2); assert.strictEqual(c.listAccounts().length, 1); ok('removing the active account falls back to another one');
   c.removeAccount(a2); assert.strictEqual(c.getActiveId(), null); assert.strictEqual(c.getSession(), null); ok('no accounts left -> signed out');
   c.set('settings', { autoStart: false });
-  assert.deepStrictEqual(c.get('settings'), { autoStart: false, showPreview: true }); ok('settings merge with defaults');
+  assert.deepStrictEqual(c.get('settings'), { autoStart: false, showPreview: true, localCache: true }); ok('settings merge with defaults');
 
   // ---- migration from the single-account version ----
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'wabd-'));

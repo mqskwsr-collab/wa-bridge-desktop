@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DEFAULTS = { settings: { autoStart: true, showPreview: true }, bounds: { width: 1100, height: 720 } };
+const DEFAULTS = { settings: { autoStart: true, showPreview: true, localCache: true }, bounds: { width: 1100, height: 720 }, lock: { enabled: false, minutes: 5, onHide: true } };
 const idOf = (serverUrl, token) => crypto.createHash('sha256').update(serverUrl + '|' + token).digest('hex').slice(0, 10);
 
 class Config {

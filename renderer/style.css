@@ -162,3 +162,31 @@ video.vid{display:block;max-width:100%;max-height:340px;border-radius:10px;backg
 /* a file that a content filter is still checking */
 .pic-wait{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center;min-width:220px;max-width:300px;padding:14px 12px;border-radius:10px;background:rgba(245,159,0,.12);border:1px dashed #f59f00;margin-bottom:4px}
 .pic-wait .ico{font-size:26px;line-height:1}
+
+/* filters, in-chat search, conversation menu, search results */
+.filters{display:flex;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.filters button{padding:3px 11px;border-radius:14px;background:var(--panel2);font-size:12px;color:var(--muted)}
+.filters button.on{background:var(--accent);color:#fff}
+.list-sec{padding:8px 14px;font-size:12px;font-weight:700;color:var(--accent);background:var(--panel2);border-bottom:1px solid var(--line)}
+.conv.res .preview{white-space:normal;max-height:2.9em}
+.conv .pin{font-size:11px;color:var(--muted)}
+.conv .mute{font-size:12px;color:var(--muted);margin-inline-end:4px}
+.badge.muted{background:#9aa5ab}
+mark{background:#ffe066;color:#111;border-radius:3px;padding:0 1px}
+.findbar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--panel2);border-bottom:1px solid var(--line)}
+.findbar input{flex:1;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.msg.flash .bubble{outline:3px solid #f59f00;outline-offset:2px;transition:outline-color .3s}
+.ctx{position:fixed;z-index:50;min-width:230px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);padding:5px}
+.ctx button{display:block;width:100%;text-align:start;padding:8px 12px;border-radius:7px}
+.ctx button:hover{background:var(--panel2)}
+.ctx .danger{color:var(--danger)}
+.ctx .sep{height:1px;background:var(--line);margin:4px 0}
+.lock{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center}
+.lock-card{background:var(--panel);width:min(340px,92vw);padding:28px 26px;border-radius:16px;box-shadow:0 10px 36px rgba(0,0,0,.18);display:flex;flex-direction:column;gap:10px;text-align:center}
+.lock-card input{padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);font-size:20px;letter-spacing:8px;text-align:center}
+.lock-card h2{margin:0}
+#app.locked{filter:blur(18px);pointer-events:none}
+.sched-quick{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.sched-quick button{padding:5px 12px;border-radius:14px;background:var(--panel2)}
+.sched-row{display:flex;gap:10px;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}
+.sched-row .t{direction:ltr;color:var(--muted);font-size:12px;white-space:nowrap}

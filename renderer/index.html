@@ -43,6 +43,9 @@
         </div>
       </header>
       <div class="search"><input id="search" type="search" placeholder="חיפוש שיחה (Ctrl+K)" dir="auto"></div>
+      <div id="filters" class="filters">
+        <button data-f="all" class="on">הכל</button><button data-f="unread">לא נקראו</button><button data-f="groups">קבוצות</button><button data-f="archived">ארכיון</button>
+      </div>
       <div id="list" class="list"></div>
       <footer class="side-foot">
         <span id="foot-ver"></span>
@@ -62,8 +65,17 @@
         <header class="chat-head">
           <div class="avatar" id="c-avatar"></div>
           <div class="c-title"><div id="c-name"></div><div id="c-sub" class="sub"></div></div>
+          <button id="b-find" class="icon" title="חיפוש בשיחה (Ctrl+F)">🔍</button>
+          <button id="b-more" class="icon" title="אפשרויות לשיחה">⋮</button>
           <button id="b-del" class="icon" title="מחק שיחה">🗑</button>
         </header>
+        <div id="findbar" class="findbar hidden">
+          <input id="find-q" type="search" placeholder="חיפוש בשיחה" dir="auto">
+          <span id="find-count" class="sub"></span>
+          <button id="find-prev" class="icon" title="חדש יותר (Shift+Enter)">↑</button>
+          <button id="find-next" class="icon" title="ישן יותר (Enter)">↓</button>
+          <button id="find-close" class="icon" title="סגור (Esc)">✕</button>
+        </div>
         <div id="thread" class="thread"></div>
         <div id="chips" class="chips hidden"></div>
         <footer class="composer">
@@ -71,6 +83,7 @@
             <button id="b-emoji" class="icon" title="אימוג'י">☺</button>
             <div id="emoji" class="emoji hidden"></div>
           </div>
+          <button id="b-sched" class="icon" title="שליחה מאוחרת">⏰</button>
           <button id="b-attach" class="icon" title="צרף קובץ">📎</button>
           <textarea id="input" rows="1" placeholder="הקלד הודעה" dir="auto"></textarea>
           <button id="b-send" class="send" title="שלח (Enter)">➤</button>
@@ -79,6 +92,17 @@
     </section>
   </div>
 
+  <div id="ctx" class="ctx hidden"></div>
+  <div id="lock" class="lock hidden">
+    <div class="lock-card">
+      <div class="logo">🔒</div>
+      <h2>WA Bridge נעול</h2>
+      <input id="lock-pin" type="password" inputmode="numeric" maxlength="12" placeholder="הקלד את הקוד" dir="ltr" autocomplete="off">
+      <div id="lock-err" class="error hidden"></div>
+      <button id="lock-go" class="primary">פתח</button>
+      <button id="lock-forgot" class="link" type="button">שכחתי את הקוד</button>
+    </div>
+  </div>
   <div id="lightbox" class="lightbox hidden">
     <div class="lb-bar"><span id="lb-name" dir="auto"></span><button id="lb-save" class="secondary">שמור…</button><button id="lb-close" class="secondary">✕ סגור</button></div>
     <img id="lb-img" alt="">

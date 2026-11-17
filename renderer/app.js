@@ -2,6 +2,7 @@
 (() => {
   const wab = window.wab;
   const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const PAGE = 60;
   const EMOJIS = ['😀', '😂', '🙂', '😉', '😍', '🥰', '😘', '😊', '🙏', '👍', '👏', '🎉', '❤️', '💪', '🤝', '😢', '😮', '🤔', '😅', '🙌', '✅', '❌', '⭐', '🔥', '🌹', '🎂', '🎁', '☕', '🍎', '🕯️', '📞', '📍'];
 
@@ -9,6 +10,7 @@
     info: null, convs: new Map(), msgs: new Map(), seen: new Set(), done: new Set(), drafts: new Map(),
     active: null, cursor: 0, phoneLastPollAt: 0, skew: 0, online: true, search: '', pendingFiles: [], loadingOlder: false, retentionDays: 30,
     gen: 0, activeId: null, acctSummary: {}, addMode: false, mediaSrc: new Map(), mediaPending: new Map(), blobUrl: new Map(), msgNodes: new Map(), dayNodes: new Map(),
+    filter: 'all', msgResults: [], sched: [], find: { q: '', results: [], idx: -1 }, stale: new Set(), fromCache: false, cacheTimer: null, lock: { enabled: false, locked: false, minutes: 5, onHide: true }, baseSub: '',
   };
 
   // ------------------------------------------------------------ helpers
@@ -139,7 +141,8 @@
     $('#me-avatar').textContent = initial({ type: 'private', name: S.info.label || '?' });
     $('#me-avatar').style.background = colorOf(S.info.label || '?');
     $('#foot-ver').textContent = 'גרסה ' + S.info.version;
-    S.convs.clear(); S.msgs.clear(); S.seen.clear(); S.done.clear();
+    S.convs.clear(); S.msgs.clear(); S.seen.clear(); S.done.clear(); S.stale.clear(); S.msgResults = []; S.sched = []; S.filter = 'all';
+    if (await loadCache()) { S.fromCache = true; renderList(); updateBanner(); } // the app opens at once with what it knew; the server confirms in a moment
     try {
       await bootstrap(false);
     } catch (e) {
@@ -147,6 +150,7 @@
       setOnline(false, e.message);
     }
     renderList();
+    refreshScheduled();
     scheduleSync();
   }
 
@@ -163,10 +167,12 @@
     const fresh = new Map();
     for (const c of d.conversations) fresh.set(key(c.type, c.name), c);
     S.convs = fresh;
+    S.fromCache = false;
     setOnline(true);
     renderList();
     updateUnread();
     updateBanner();
+    saveCacheSoon();
   }
 
   function scheduleSync() {
@@ -207,7 +213,8 @@
   function updateBanner() {
     const b = $('#banner');
     let text = '', bad = false;
-    if (!S.online) { text = (S.offlineMsg || 'אין חיבור לשרת') + ' — מנסה שוב…'; bad = true; }
+    if (S.fromCache && S.online) text = 'מציג עותק שמור מהפעם הקודמת, מתעדכן מהשרת…';
+    else if (!S.online) { text = (S.offlineMsg || 'אין חיבור לשרת') + ' — מנסה שוב…'; bad = true; }
     else if (!S.phoneLastPollAt) text = 'הטלפון עדיין לא התחבר לשרת. הודעות ימתינו עד שיתחבר.';
     else {
       const age = now() - S.phoneLastPollAt;
@@ -238,18 +245,23 @@
       if (k === S.active) touchedActive = true;
       if (m.dir === 'in' && isNew) {
         if (k === S.active && document.hasFocus()) api('POST', '/api/desk/read', { type: m.type, name: m.target }).catch(() => {});
-        else { c.unread = (c.unread || 0) + 1; wab.notify({ key: k, title: c.name, body: m.text || (m.files && m.files.length ? '📎 ' + m.files[0].name : '') }); }
+        else {
+          c.unread = (c.unread || 0) + 1;
+          if (c.prefs && c.prefs.archived && !c.prefs.muted) { const p = { ...c.prefs }; delete p.archived; c.prefs = p; } // the server does the same: a new message brings the chat back
+          if (!(c.prefs && c.prefs.muted)) wab.notify({ key: k, title: c.name, body: m.text || (m.files && m.files.length ? '📎 ' + m.files[0].name : '') });
+        }
       }
     }
     renderList();
     updateUnread();
+    saveCacheSoon();
     if (touchedActive) renderThread(false);
     if (unknown) bootstrap(true).catch(() => {});
   }
 
   function updateUnread() {
     let n = 0;
-    for (const c of S.convs.values()) n += c.unread || 0;
+    for (const c of S.convs.values()) if (!(c.prefs && c.prefs.muted)) n += c.unread || 0; // muted chats do not count
     S.acctSummary[S.activeId] = { ...(S.acctSummary[S.activeId] || {}), unread: n };
     let others = 0;
     for (const [id, v] of Object.entries(S.acctSummary)) if (id !== S.activeId) others += v.unread || 0;
@@ -259,29 +271,70 @@
   }
 
   // ------------------------------------------------------------ conversation list
+  function highlight(text, q) {
+    const out = [];
+    const low = text.toLowerCase();
+    let at = 0, i;
+    while (q && (i = low.indexOf(q, at)) >= 0) { if (i > at) out.push(text.slice(at, i)); out.push(el('mark', { text: text.slice(i, i + q.length) })); at = i + q.length; }
+    out.push(text.slice(at));
+    return out;
+  }
+
+  function renderFilters() {
+    const unread = [...S.convs.values()].filter((c) => !(c.prefs || {}).archived && c.unread > 0).length;
+    for (const b of $$('#filters button')) {
+      b.classList.toggle('on', b.dataset.f === S.filter);
+      if (b.dataset.f === 'unread') b.textContent = unread ? `לא נקראו (${unread})` : 'לא נקראו';
+    }
+  }
+
+  function convRow(k, c) {
+    const last = c.last, p = c.prefs || {};
+    let preview = c.type === 'group' ? 'קבוצה' : c.phone ? '+' + c.phone : '';
+    if (last) {
+      const body = last.text || (last.files ? '📎 קובץ' : '');
+      preview = (last.dir === 'out' ? (TICK[last.status] || TICK.queued)[0] + ' ' : '') + body;
+    }
+    const row = el('div', { class: 'conv' + (k === S.active ? ' active' : ''), 'data-key': k, on: { click: () => openConv(k) } },
+      avatar(c),
+      el('div', { class: 'conv-main' },
+        el('div', { class: 'row1' }, el('span', { class: 'name', dir: nameDir(c.name), text: c.name }), el('span', { style: 'display:flex;gap:6px;align-items:center' }, p.pinned ? el('span', { class: 'pin', title: 'מוצמדת', text: '📌' }) : null, el('span', { class: 'time' + (c.unread && !p.muted ? ' unread' : ''), text: listTime(c.lastAt) }))),
+        el('div', { class: 'row2' }, el('span', { class: 'preview', dir: 'auto', text: preview }), el('span', { style: 'display:flex;align-items:center' }, p.muted ? el('span', { class: 'mute', title: 'מושתקת', text: '🔕' }) : null, p.ignore ? el('span', { class: 'mute', title: 'לא נשמרת', text: '🚫' }) : null, c.unread ? el('span', { class: 'badge' + (p.muted ? ' muted' : ''), text: c.unread > 99 ? '99+' : String(c.unread) }) : null))));
+    row.addEventListener('contextmenu', (e) => { e.preventDefault(); convMenu(k, e.clientX, e.clientY); });
+    return row;
+  }
+
+  function resultRow(r, q) {
+    const k = key(r.type, r.target);
+    const c = S.convs.get(k) || { type: r.type, name: r.target };
+    return el('div', { class: 'conv res', on: { click: () => openConvAt(k, r.id) } }, avatar(c),
+      el('div', { class: 'conv-main' },
+        el('div', { class: 'row1' }, el('span', { class: 'name', dir: nameDir(r.target), text: r.target }), el('span', { class: 'time', text: listTime(r.at) })),
+        el('div', { class: 'row2' }, el('span', { class: 'preview', dir: 'auto' }, r.dir === 'out' ? 'אני: ' : '', ...highlight(r.text, q)))));
+  }
+
   function renderList() {
+    renderFilters();
     const q = S.search.trim().toLowerCase();
-    const items = [...S.convs.entries()]
-      .filter(([, c]) => !q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q) || (c.last && c.last.text.toLowerCase().includes(q)))
-      .sort((a, b) => (b[1].lastAt || 0) - (a[1].lastAt || 0) || a[1].name.localeCompare(b[1].name, 'he'));
-    const list = $('#list');
-    if (!items.length) {
-      list.replaceChildren(el('div', { class: 'list-empty', text: q ? 'לא נמצאו שיחות' : 'אין עדיין שיחות. לחץ ✎ כדי להתחיל שיחה חדשה.' }));
+    const visible = ([, c]) => {
+      const p = c.prefs || {};
+      if (q) return c.name.toLowerCase().includes(q) || (c.phone || '').includes(q) || (c.last && c.last.text.toLowerCase().includes(q));
+      if (S.filter === 'archived') return !!p.archived;
+      if (p.archived) return false;
+      if (S.filter === 'unread') return c.unread > 0;
+      if (S.filter === 'groups') return c.type === 'group';
+      return true;
+    };
+    const items = [...S.convs.entries()].filter(visible)
+      .sort((a, b) => (((b[1].prefs || {}).pinned ? 1 : 0) - ((a[1].prefs || {}).pinned ? 1 : 0)) || (b[1].lastAt || 0) - (a[1].lastAt || 0) || a[1].name.localeCompare(b[1].name, 'he'));
+    const rows = items.map(([k, c]) => convRow(k, c));
+    if (q && S.msgResults.length) rows.push(el('div', { class: 'list-sec', text: `הודעות (${S.msgResults.length})` }), ...S.msgResults.map((r) => resultRow(r, q)));
+    if (!rows.length) {
+      const msg = q ? 'לא נמצאו שיחות' : S.filter === 'archived' ? 'הארכיון ריק' : S.filter === 'unread' ? 'אין הודעות שלא נקראו' : S.filter === 'groups' ? 'אין קבוצות' : 'אין עדיין שיחות. לחץ ✎ כדי להתחיל שיחה חדשה.';
+      $('#list').replaceChildren(el('div', { class: 'list-empty', text: msg }));
       return;
     }
-    list.replaceChildren(...items.map(([k, c]) => {
-      const last = c.last;
-      let preview = c.type === 'group' ? 'קבוצה' : c.phone ? '+' + c.phone : '';
-      if (last) {
-        const body = last.text || (last.files ? '📎 קובץ' : '');
-        preview = (last.dir === 'out' ? (TICK[last.status] || TICK.queued)[0] + ' ' : '') + body;
-      }
-      return el('div', { class: 'conv' + (k === S.active ? ' active' : ''), 'data-key': k, on: { click: () => openConv(k) } },
-        avatar(c),
-        el('div', { class: 'conv-main' },
-          el('div', { class: 'row1' }, el('span', { class: 'name', dir: nameDir(c.name), text: c.name }), el('span', { class: 'time' + (c.unread ? ' unread' : ''), text: listTime(c.lastAt) })),
-          el('div', { class: 'row2' }, el('span', { class: 'preview', dir: 'auto', text: preview }), c.unread ? el('span', { class: 'badge', text: c.unread > 99 ? '99+' : String(c.unread) }) : null)));
-    }));
+    $('#list').replaceChildren(...rows);
   }
 
   // ------------------------------------------------------------ chat view
@@ -299,24 +352,29 @@
     $('#c-avatar').replaceWith(Object.assign(avatar(c), { id: 'c-avatar' }));
     $('#c-name').textContent = c.name;
     $('#c-name').setAttribute('dir', nameDir(c.name));
-    $('#c-sub').textContent = c.type === 'group' ? 'קבוצה (הודעות טקסט בלבד)' : c.phone ? '+' + c.phone : 'ללא מספר טלפון (ניתן להשיב רק לשיחות שהתחילו בוואטסאפ)';
+    S.baseSub = c.type === 'group' ? 'קבוצה (הודעות טקסט בלבד)' : c.phone ? '+' + c.phone : 'ללא מספר טלפון (ניתן להשיב רק לשיחות שהתחילו בוואטסאפ)';
+    updateSub();
+    closeFind();
     $('#input').value = S.drafts.get(S.activeId + '|' + k) || '';
     autoGrow();
     renderList();
-    if (!S.msgs.has(k)) {
-      $('#thread').replaceChildren(el('div', { class: 'loading', text: 'טוען…' }));
+    const hadCopy = S.msgs.has(k);
+    if (hadCopy) renderThread(true); // the saved copy shows at once
+    if (!hadCopy || S.stale.has(k)) {
+      if (!hadCopy) $('#thread').replaceChildren(el('div', { class: 'loading', text: 'טוען…' }));
       try {
         const d = await api('GET', `/api/desk/messages?type=${c.type}&name=${encodeURIComponent(c.name)}&limit=${PAGE}`);
         if (S.active !== k || gen !== S.gen) return;
         S.msgs.set(k, d.messages);
+        S.stale.delete(k);
         d.messages.forEach((m) => S.seen.add(m.id));
         if (d.messages.length < PAGE) S.done.add(k);
       } catch (e) {
-        toast(e.message, 'error');
-        return;
+        if (!hadCopy) { toast(e.message, 'error'); return; } // with a saved copy the chat stays readable offline
       }
     }
     renderThread(true);
+    saveCacheSoon();
     $('#input').focus();
     if (c.unread) {
       c.unread = 0;
@@ -733,6 +791,8 @@
       upd,
       mk('הפעל עם Windows (ברקע, ליד השעון)', 'autoStart'),
       mk('הצג תוכן הודעות בהתראות', 'showPreview'),
+      mk('שמור עותק מקומי מוצפן להפעלה מהירה', 'localCache'),
+      el('div', { class: 'toggle' }, el('span', { text: S.lock.enabled ? 'נעילה בקוד: פעילה' : 'נעילה בקוד: כבויה' }), el('button', { class: 'secondary', text: S.lock.enabled ? 'הגדרות נעילה…' : 'הפעל נעילה…', on: { click: lockDialog } })),
       el('p', { class: 'hint', text: `היסטוריית הצ'אט נשמרת בשרת ${S.retentionDays ? S.retentionDays + ' ימים' : 'עד 3000 הודעות'} (ניתן לשנות באזור האישי באתר). איש הקשר נשמר לצמיתות.` }),
       el('div', { class: 'dlg-actions' },
         el('button', { class: 'secondary', text: 'הוסף מספר', on: { click: () => { closeDialog(); showLogin('', { add: true }); } } }),
@@ -756,6 +816,8 @@
   async function switchAccount(id) {
     if (!id || id === S.activeId || !S.info.accounts.some((a) => a.id === id)) return;
     if (S.active) S.drafts.set(S.activeId + '|' + S.active, $('#input').value);
+    clearTimeout(S.cacheTimer);
+    saveCache(); // keep what this number looked like, for its next instant start
     stopSync();
     S.info = await wab.switchAccount(id);
     await startSession();
@@ -828,6 +890,264 @@
     }
   }
 
+  // ------------------------------------------------------------ search (all chats) and find in this chat
+  let searchTimer = null;
+  async function runMsgSearch() {
+    const q = S.search.trim();
+    const gen = S.gen;
+    try {
+      const d = await api('GET', '/api/desk/search?q=' + encodeURIComponent(q));
+      if (gen !== S.gen || q !== S.search.trim()) return;
+      S.msgResults = d.results;
+      renderList();
+    } catch { /* the chat list search still works */ }
+  }
+
+  // makes sure message `id` is loaded (older pages are fetched when needed), scrolls to it and flashes it
+  async function jumpToMessage(k, id) {
+    for (let i = 0; i < 25; i++) {
+      if ((S.msgs.get(k) || []).some((m) => m.id === id)) break;
+      if (S.done.has(k) || S.active !== k) return false;
+      await loadOlder();
+    }
+    renderThread(false);
+    const node = $(`#thread [data-id="${id}"]`);
+    if (!node) return false;
+    node.scrollIntoView({ block: 'center' });
+    node.classList.add('flash');
+    setTimeout(() => node.classList.remove('flash'), 1800);
+    return true;
+  }
+  async function openConvAt(k, id) {
+    if (!S.convs.has(k)) return;
+    if (S.active !== k) await openConv(k);
+    await jumpToMessage(k, id);
+  }
+
+  function openFind() {
+    if (!S.active) return;
+    show('#findbar');
+    $('#find-q').focus();
+    $('#find-q').select();
+  }
+  function closeFind() {
+    show('#findbar', false);
+    S.find = { q: '', results: [], idx: -1 };
+    $('#find-q').value = '';
+    $('#find-count').textContent = '';
+  }
+  async function runFind() {
+    const q = $('#find-q').value.trim();
+    const c = S.convs.get(S.active);
+    if (!c || q.length < 2) { S.find = { q, results: [], idx: -1 }; $('#find-count').textContent = ''; return; }
+    try {
+      const d = await api('GET', `/api/desk/search?q=${encodeURIComponent(q)}&type=${c.type}&name=${encodeURIComponent(c.name)}`);
+      if (q !== $('#find-q').value.trim()) return;
+      S.find = { q, results: d.results, idx: -1 };
+      gotoFind(0);
+    } catch (e) { $('#find-count').textContent = e.message; }
+  }
+  function gotoFind(i) {
+    const n = S.find.results.length;
+    if (!n) { $('#find-count').textContent = S.find.q.length >= 2 ? 'אין תוצאות' : ''; return; }
+    S.find.idx = ((i % n) + n) % n; // results are newest first: "next" goes to older messages
+    $('#find-count').textContent = `${S.find.idx + 1} מתוך ${n}`;
+    jumpToMessage(S.active, S.find.results[S.find.idx].id);
+  }
+
+  // ------------------------------------------------------------ per-chat menu: pin, mute, archive, ignore, schedule, delete
+  const closeCtx = () => show('#ctx', false);
+  function openCtx(items, x, y) {
+    const box = $('#ctx');
+    box.replaceChildren(...items.map((it) => (it === '-' ? el('div', { class: 'sep' }) : el('button', { class: it.danger ? 'danger' : '', text: it.label, on: { click: () => { closeCtx(); it.run(); } } }))));
+    show('#ctx');
+    box.style.left = Math.max(6, Math.min(x, window.innerWidth - 250)) + 'px';
+    box.style.top = Math.max(6, Math.min(y, window.innerHeight - box.offsetHeight - 10)) + 'px';
+  }
+
+  async function setPref(k, patch) {
+    const c = S.convs.get(k);
+    if (!c) return;
+    try {
+      const r = await api('POST', '/api/desk/conv/prefs', { type: c.type, name: c.name, ...patch });
+      c.prefs = r.prefs;
+      renderList();
+      updateUnread();
+      saveCacheSoon();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function convMenu(k, x, y) {
+    const c = S.convs.get(k);
+    if (!c) return;
+    const p = c.prefs || {};
+    const n = S.sched.filter((j) => j.type === c.type && j.target === c.name).length;
+    openCtx([
+      { label: p.pinned ? '📌 בטל הצמדה' : '📌 הצמד לראש הרשימה', run: () => setPref(k, { pinned: !p.pinned }) },
+      { label: p.muted ? '🔔 בטל השתקה' : '🔕 השתק (בלי התראות)', run: () => setPref(k, { muted: !p.muted }) },
+      { label: p.archived ? '📤 הוצא מהארכיון' : '🗄 העבר לארכיון', run: () => setPref(k, { archived: !p.archived }) },
+      ...(n ? [{ label: `⏰ הודעות מתוזמנות (${n})`, run: () => { if (S.active !== k) openConv(k); scheduledDialog(k); } }] : []),
+      '-',
+      { label: p.ignore ? '✅ התחל לשמור הודעות מהשיחה' : '🚫 התעלם מהשיחה (לא לשמור ולא לשלוח מייל)', run: () => {
+        if (!p.ignore && !confirm(`להתעלם מהשיחה "${c.name}"?\nהודעות חדשות ממנה לא יישמרו ולא יישלחו אליך במייל. אפשר לבטל בכל רגע מאותו תפריט.`)) return;
+        setPref(k, { ignore: !p.ignore });
+      } },
+      { label: '🗑 מחק שיחה', danger: true, run: () => deleteConv(k) },
+    ], x, y);
+  }
+
+  // ------------------------------------------------------------ scheduled messages
+  async function refreshScheduled() {
+    try { S.sched = (await api('GET', '/api/desk/scheduled')).jobs || []; } catch { /* an older server: no scheduling */ }
+    updateSub();
+  }
+  function updateSub() {
+    const c = S.convs.get(S.active);
+    if (!c) return;
+    const n = S.sched.filter((j) => j.type === c.type && j.target === c.name).length;
+    $('#c-sub').textContent = S.baseSub + (n ? ` · ⏰ ${n} מתוזמנות` : '');
+  }
+  const fmtWhen = (t) => new Date(t).toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+  const toLocalInput = (t) => { const d = new Date(t); const p = (x) => String(x).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const atToday = (h, m, plusDays = 0) => { const d = new Date(); d.setHours(h, m, 0, 0); d.setDate(d.getDate() + plusDays); return d.getTime(); };
+
+  function scheduleDialog() {
+    const c = S.convs.get(S.active);
+    if (!c) return;
+    const text = $('#input').value.trim();
+    if (!text) { toast('כתוב קודם את ההודעה בתיבה, ואז לחץ ⏰', 'error'); return; }
+    if (S.pendingFiles.length) { toast('אפשר לתזמן הודעת טקסט בלבד (בלי קבצים)', 'error'); return; }
+    const err = el('div', { class: 'error hidden' });
+    const when = el('input', { type: 'datetime-local', id: 'sched-when', value: toLocalInput(Date.now() + 3600 * 1000) });
+    const go = async (at) => {
+      try {
+        await api('POST', '/api/desk/schedule', { type: c.type, name: c.name, text, at });
+        $('#input').value = '';
+        S.drafts.delete(S.activeId + '|' + S.active);
+        autoGrow();
+        closeDialog();
+        toast('ההודעה תישלח ב-' + fmtWhen(at));
+        refreshScheduled();
+      } catch (e) { err.textContent = e.message; err.classList.remove('hidden'); }
+    };
+    const eve = atToday(20, 0) > Date.now() + 60000 ? atToday(20, 0) : atToday(20, 0, 1);
+    const quick = (label, at) => el('button', { type: 'button', text: label, on: { click: () => go(at) } });
+    openDialog(el('h3', { text: `שליחה מאוחרת ל-${c.name}` }), el('p', { class: 'sub', dir: 'auto', text: text.length > 140 ? text.slice(0, 140) + '…' : text }),
+      el('div', { class: 'sched-quick' }, quick('בעוד שעה', Date.now() + 3600 * 1000), quick(eve > atToday(20, 0) ? 'מחר ב-20:00' : 'הערב ב-20:00', eve), quick('מחר ב-08:00', atToday(8, 0, 1)), quick('מחר ב-12:00', atToday(12, 0, 1))),
+      field('או בחר זמן', when), err,
+      el('div', { class: 'dlg-actions' }, el('button', { class: 'secondary', text: 'ביטול', on: { click: closeDialog } }), el('button', { class: 'primary', text: 'תזמן', on: { click: () => go(new Date(when.value).getTime()) } })));
+  }
+
+  function scheduledDialog(k = S.active) {
+    const c = S.convs.get(k);
+    if (!c) return;
+    const jobs = S.sched.filter((j) => j.type === c.type && j.target === c.name);
+    openDialog(el('h3', { text: `הודעות מתוזמנות: ${c.name}` }),
+      ...(jobs.length ? jobs.map((j) => el('div', { class: 'sched-row' }, el('div', { dir: 'auto', text: j.text }), el('div', { style: 'display:flex;flex-direction:column;gap:4px;align-items:flex-end' }, el('span', { class: 't', text: fmtWhen(j.at) }), el('button', { class: 'link', text: 'בטל', on: { click: async () => { try { await api('POST', '/api/desk/schedule/cancel', { id: j.id }); await refreshScheduled(); scheduledDialog(k); } catch (e) { toast(e.message, 'error'); } } } })))) : [el('p', { class: 'sub', text: 'אין הודעות מתוזמנות לשיחה הזו.' })]),
+      el('div', { class: 'dlg-actions' }, el('button', { class: 'primary', text: 'סגור', on: { click: closeDialog } })));
+  }
+
+  // ------------------------------------------------------------ local copy for an instant start
+  const CACHE_CONVS = 25;
+  const CACHE_MSGS = 40;
+  function saveCacheSoon() {
+    clearTimeout(S.cacheTimer);
+    S.cacheTimer = setTimeout(saveCache, 4000);
+  }
+  function saveCache() {
+    if (!S.activeId || !S.info.settings.localCache || S.fromCache || !S.convs.size) return; // never overwrite the copy with an empty/unconfirmed state
+    const convs = [...S.convs.entries()].sort((a, b) => (b[1].lastAt || 0) - (a[1].lastAt || 0));
+    const msgs = {};
+    for (const [k] of convs.slice(0, CACHE_CONVS)) { const l = S.msgs.get(k); if (l && l.length) msgs[k] = l.slice(-CACHE_MSGS); }
+    Promise.resolve(wab.cacheSave(S.activeId, JSON.stringify({ v: 1, at: Date.now(), convs: convs.map(([, c]) => c), msgs }))).catch(() => {});
+  }
+  async function loadCache() {
+    if (!S.info.settings.localCache) return false;
+    let raw = null;
+    try { raw = await wab.cacheLoad(S.activeId); } catch { return false; }
+    if (!raw) return false;
+    let d;
+    try { d = JSON.parse(raw); } catch { return false; }
+    if (!d || d.v !== 1 || !Array.isArray(d.convs)) return false;
+    for (const c of d.convs) S.convs.set(key(c.type, c.name), c);
+    for (const [k, list] of Object.entries(d.msgs || {})) { S.msgs.set(k, list); S.stale.add(k); list.forEach((m) => S.seen.add(m.id)); }
+    return true;
+  }
+
+  // ------------------------------------------------------------ app lock
+  let idleTimer = null;
+  function resetIdle() {
+    clearTimeout(idleTimer);
+    const st = S.lock;
+    if (!st || !st.enabled || st.locked || !running) return;
+    idleTimer = setTimeout(() => wab.lockNow().then(applyLock), window.__wabIdleMs || st.minutes * 60000);
+  }
+  function applyLock(st) {
+    S.lock = st || S.lock;
+    const locked = !!(S.lock.enabled && S.lock.locked);
+    show('#lock', locked);
+    $('#app').classList.toggle('locked', locked);
+    if (locked) {
+      $('#lock-pin').value = '';
+      show('#lock-err', false);
+      closeDialog(); closeLightbox(); closeCtx();
+      setTimeout(() => $('#lock-pin').focus(), 0);
+    }
+    resetIdle();
+  }
+  async function tryUnlock() {
+    const pin = $('#lock-pin').value;
+    if (!pin) return;
+    const r = await wab.lockVerify(pin);
+    if (r.ok) { applyLock(await wab.lockState()); return; }
+    const err = $('#lock-err');
+    err.textContent = r.waitMs > 0 ? `יותר מדי ניסיונות. נסה שוב בעוד ${Math.ceil(r.waitMs / 1000)} שניות` : 'קוד שגוי';
+    show('#lock-err');
+    $('#lock-pin').value = '';
+    $('#lock-pin').focus();
+  }
+  async function forgotPin() {
+    if (!confirm('לאפס את הקוד?\nכל המספרים ייצאו מהמחשב הזה ותצטרך להתחבר מחדש עם הקישור האישי והסיסמה. השיחות עצמן נשארות בשרת.')) return;
+    S.info = await wab.lockReset();
+    stopSync();
+    applyLock(S.info.lock);
+    S.info.loggedIn = false;
+    showLogin('הקוד אופס. התחבר מחדש.');
+  }
+
+  function lockDialog() {
+    const st = S.lock;
+    const sel = el('select', { id: 'lock-min' }, ...[1, 5, 15, 30, 60].map((m) => el('option', { value: String(m), text: m === 60 ? 'שעה' : `${m} דקות` })));
+    sel.value = String(st.minutes || 5);
+    const hide = el('input', { type: 'checkbox', id: 'lock-hide' });
+    hide.checked = st.onHide !== false;
+    const err = el('div', { class: 'error hidden' });
+    const fail = (m) => { err.textContent = m; err.classList.remove('hidden'); };
+    const opts = [el('label', { class: 'toggle' }, el('span', { text: 'נעל אחרי חוסר פעילות של' }), sel), el('label', { class: 'toggle' }, el('span', { text: 'נעל גם כשסוגרים את החלון (נשאר ליד השעון) וכש-Windows ננעל' }), hide)];
+    if (!st.enabled) {
+      const p1 = el('input', { type: 'password', inputmode: 'numeric', maxlength: '12', dir: 'ltr', id: 'lock-p1' });
+      const p2 = el('input', { type: 'password', inputmode: 'numeric', maxlength: '12', dir: 'ltr', id: 'lock-p2' });
+      openDialog(el('h3', { text: 'נעילת האפליקציה בקוד' }), el('p', { class: 'hint', text: 'הקוד מסתיר את השיחות מפני מי שפותח את המחשב. הוא לא מחליף נעילה של Windows.' }),
+        field('קוד (4 עד 12 ספרות)', p1), field('הקלד שוב', p2), ...opts, err,
+        el('div', { class: 'dlg-actions' }, el('button', { class: 'secondary', text: 'ביטול', on: { click: closeDialog } }), el('button', { class: 'primary', text: 'הפעל נעילה', on: { click: async () => {
+          if (p1.value !== p2.value) return fail('שני הקודים לא זהים');
+          const r = await wab.lockSetup({ pin: p1.value, minutes: Number(sel.value), onHide: hide.checked });
+          if (!r.ok) return fail(r.error);
+          applyLock(r.lock); closeDialog(); toast('הנעילה הופעלה');
+        } } })));
+      return;
+    }
+    const pin = el('input', { type: 'password', inputmode: 'numeric', maxlength: '12', dir: 'ltr', id: 'lock-off-pin' });
+    sel.addEventListener('change', async () => applyLock(await wab.lockUpdate({ minutes: Number(sel.value) })));
+    hide.addEventListener('change', async () => applyLock(await wab.lockUpdate({ onHide: hide.checked })));
+    openDialog(el('h3', { text: 'נעילת האפליקציה בקוד' }), ...opts, field('כדי לבטל את הנעילה הקלד את הקוד', pin), err,
+      el('div', { class: 'dlg-actions' }, el('button', { class: 'secondary', text: 'בטל נעילה', on: { click: async () => {
+        const r = await wab.lockDisable(pin.value);
+        if (!r.ok) return fail(r.waitMs > 0 ? `יותר מדי ניסיונות, נסה בעוד ${Math.ceil(r.waitMs / 1000)} שניות` : 'קוד שגוי');
+        applyLock(r.lock); closeDialog(); toast('הנעילה בוטלה');
+      } } }), el('button', { class: 'primary', text: 'סגור', on: { click: closeDialog } })));
+  }
+
   // ------------------------------------------------------------ wiring
   function onUpdate(u) {
     S.info.update = u;
@@ -841,18 +1161,17 @@
     if (b) b.classList.toggle('hidden', u.status !== 'ready');
   }
 
-  async function deleteConv() {
-    const c = S.convs.get(S.active);
+  async function deleteConv(k = S.active) {
+    const c = S.convs.get(k);
     if (!c || !confirm(`למחוק את השיחה עם "${c.name}"?\nאיש הקשר וההודעות השמורות ימחקו מהשרת.`)) return;
     try {
       await api('POST', '/api/desk/conversations/delete', { type: c.type, name: c.name });
-      S.convs.delete(S.active);
-      S.msgs.delete(S.active);
-      S.active = null;
-      show('#chat', false);
-      show('#empty');
+      S.convs.delete(k);
+      S.msgs.delete(k);
+      if (S.active === k) { S.active = null; show('#chat', false); show('#empty'); }
       renderList();
       updateUnread();
+      saveCacheSoon();
     } catch (e) { toast(e.message, 'error'); }
   }
 
@@ -862,14 +1181,37 @@
     $('#b-new').addEventListener('click', () => newChatDialog());
     $('#b-new2').addEventListener('click', () => newChatDialog());
     $('#b-settings').addEventListener('click', settingsDialog);
-    $('#b-del').addEventListener('click', deleteConv);
+    $('#b-del').addEventListener('click', () => deleteConv());
     $('#b-status').addEventListener('click', statusDialog);
+    $('#filters').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; S.filter = b.dataset.f; renderList(); });
+    $('#b-find').addEventListener('click', openFind);
+    $('#find-close').addEventListener('click', closeFind);
+    $('#find-next').addEventListener('click', () => gotoFind(S.find.idx + 1));
+    $('#find-prev').addEventListener('click', () => gotoFind(S.find.idx - 1));
+    let findTimer = null;
+    $('#find-q').addEventListener('input', () => { clearTimeout(findTimer); findTimer = setTimeout(runFind, 250); });
+    $('#find-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gotoFind(S.find.idx + (e.shiftKey ? -1 : 1)); } });
+    $('#b-more').addEventListener('click', (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); convMenu(S.active, r.left, r.bottom + 4); });
+    $('#b-sched').addEventListener('click', scheduleDialog);
+    document.addEventListener('click', closeCtx);
+    $('#lock-go').addEventListener('click', tryUnlock);
+    $('#lock-pin').addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
+    $('#lock-forgot').addEventListener('click', forgotPin);
+    let lastActivity = 0;
+    for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel']) document.addEventListener(ev, () => { const t = Date.now(); if (t - lastActivity > 1000) { lastActivity = t; resetIdle(); } }, true);
+    wab.onLock((st) => applyLock(st));
     $('#l-cancel').addEventListener('click', () => { show('#login', false); startSession(); });
     $('#me-btn').addEventListener('click', (e) => { e.stopPropagation(); renderAccountMenu(); $('#acct-menu').classList.toggle('hidden'); });
     document.addEventListener('click', (e) => { if (!$('#acct-menu').contains(e.target)) $('#acct-menu').classList.add('hidden'); });
     $('#b-send').addEventListener('click', sendMessage);
     $('#b-attach').addEventListener('click', attach);
-    $('#search').addEventListener('input', (e) => { S.search = e.target.value; renderList(); });
+    $('#search').addEventListener('input', (e) => {
+      S.search = e.target.value;
+      renderList();
+      clearTimeout(searchTimer);
+      if (S.search.trim().length >= 2) searchTimer = setTimeout(runMsgSearch, 300);
+      else if (S.msgResults.length) { S.msgResults = []; renderList(); }
+    });
     $('#thread').addEventListener('scroll', (e) => { if (e.target.scrollTop < 60) loadOlder(); });
     $('#modal').addEventListener('mousedown', (e) => { if (e.target.id === 'modal') closeDialog(); });
     const emoji = $('#emoji');
@@ -892,7 +1234,8 @@
     input.addEventListener('input', autoGrow);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(); } });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { closeLightbox(); closeDialog(); emoji.classList.add('hidden'); }
+      if (e.key === 'Escape') { closeLightbox(); closeDialog(); closeCtx(); if (!$('#findbar').classList.contains('hidden')) closeFind(); emoji.classList.add('hidden'); }
+      if (e.ctrlKey && e.key.toLowerCase() === 'f' && running) { e.preventDefault(); openFind(); }
       if (e.ctrlKey && e.key.toLowerCase() === 'n' && S.info.loggedIn !== false && running) { e.preventDefault(); newChatDialog(); }
       if (e.ctrlKey && e.key.toLowerCase() === 'k' && running) { e.preventDefault(); $('#search').focus(); }
       if (e.ctrlKey && /^[1-9]$/.test(e.key) && running) { const a = S.info.accounts[Number(e.key) - 1]; if (a) { e.preventDefault(); switchAccount(a.id); } }
@@ -912,6 +1255,8 @@
       else { delete S.acctSummary[id]; renderAccountMenu(); toast('ההתחברות לאחד המספרים פגה. הוסף אותו מחדש בקישור האישי.', 'error'); }
     });
     onUpdate(S.info.update);
+    S.lock = S.info.lock || S.lock;
+    applyLock(S.lock);
     if (S.info.loggedIn) startSession();
     else showLogin();
   }

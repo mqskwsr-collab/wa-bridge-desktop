@@ -2,11 +2,13 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, shell, dialog, safeStorage, net, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, shell, dialog, safeStorage, net, session, powerMonitor } = require('electron');
 const { Config } = require('./src/config');
 const { createApi, parseLink } = require('./src/api');
 const { verifyMedia } = require('./src/mediaCheck');
 const { applyFeed, friendlyUpdateError } = require('./src/feed');
+const { LocalCache } = require('./src/cache');
+const { createLock } = require('./src/lock');
 
 const DEV = !app.isPackaged;
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -19,6 +21,8 @@ let win = null;
 let tray = null;
 let quitting = false;
 let config = null;
+let cache = null;
+let lock = null;
 let api = null;
 let autoUpdater = null;
 const state = { unread: 0, update: { status: 'idle', version: '', percent: 0, error: '' } };
@@ -186,7 +190,7 @@ function info() {
   const s = config.getSession();
   return {
     version: app.getVersion(), packaged: !DEV, loggedIn: !!s, label: s ? s.label : '', serverUrl: s ? s.serverUrl : '',
-    accounts: config.listAccounts(), activeId: config.getActiveId(), settings: config.get('settings'), update: state.update,
+    accounts: config.listAccounts(), activeId: config.getActiveId(), settings: config.get('settings'), update: state.update, lock: lock.state(),
   };
 }
 
@@ -211,6 +215,7 @@ function registerIpc() {
     const accountId = id || config.getActiveId();
     try { await api.call('POST', '/api/desk/logout', {}, { accountId }); } catch { /* signing out locally anyway */ }
     config.removeAccount(accountId);
+    cache.clear(accountId);
     if (!config.listAccounts().length) { state.unread = 0; refreshTray(); }
     return info();
   });
@@ -277,6 +282,7 @@ function registerIpc() {
     const allowed = {};
     if (patch && typeof patch.autoStart === 'boolean') allowed.autoStart = patch.autoStart;
     if (patch && typeof patch.showPreview === 'boolean') allowed.showPreview = patch.showPreview;
+    if (patch && typeof patch.localCache === 'boolean') allowed.localCache = patch.localCache;
     return applySettings(allowed);
   });
 
@@ -286,10 +292,31 @@ function registerIpc() {
     if (win && win.isVisible() && win.isFocused()) return;
     if (win && !win.isFocused()) win.flashFrame(true);
     if (!Notification.isSupported()) return;
-    const show = config.get('settings').showPreview;
-    const n = new Notification({ title: String(title || 'WA Bridge').slice(0, 80), body: show ? String(body || '').slice(0, 160) : 'הודעה חדשה', icon: img('tray-unread.png') });
-    n.on('click', () => { showWindow(); send('open-conv', key); });
+    const show = config.get('settings').showPreview && !lock.isLocked(); // while locked, a notification shows nothing about the chat
+    const n = new Notification({ title: lock.isLocked() ? 'WA Bridge' : String(title || 'WA Bridge').slice(0, 80), body: show ? String(body || '').slice(0, 160) : 'הודעה חדשה', icon: img('tray-unread.png') });
+    n.on('click', () => { showWindow(); if (!lock.isLocked()) send('open-conv', key); });
     n.show();
+  });
+
+  // local copy of the chats for an instant start (encrypted per Windows user)
+  ipcMain.handle('cache:load', (e, { accountId } = {}) => (config.get('settings').localCache ? cache.load(accountId) : null));
+  ipcMain.handle('cache:save', (e, { accountId, json } = {}) => (config.get('settings').localCache ? cache.save(accountId, json) : false));
+
+  // app lock
+  const lockChanged = () => send('lock', lock.state());
+  ipcMain.handle('lock:state', () => lock.state());
+  ipcMain.handle('lock:setup', (e, o = {}) => { try { lock.setup(o); lockChanged(); return { ok: true, lock: lock.state() }; } catch (err) { return { ok: false, error: err.message }; } });
+  ipcMain.handle('lock:update', (e, o = {}) => { lock.update(o); lockChanged(); return lock.state(); });
+  ipcMain.handle('lock:verify', (e, { pin } = {}) => { const r = lock.verify(String(pin || '')); lockChanged(); return r; });
+  ipcMain.handle('lock:disable', (e, { pin } = {}) => { const r = lock.disable(String(pin || '')); lockChanged(); return { ...r, lock: lock.state() }; });
+  ipcMain.handle('lock:now', () => { lock.lockNow(); lockChanged(); return lock.state(); });
+  // forgot the PIN: the only way back in is to sign every account out of this computer (the chats themselves stay on the server)
+  ipcMain.handle('lock:reset', () => {
+    for (const a of config.listAccounts()) { config.removeAccount(a.id); cache.clear(a.id); }
+    lock.reset();
+    state.unread = 0;
+    refreshTray();
+    return info();
   });
 
   ipcMain.handle('update:check', () => { checkForUpdates(true); return state.update; });
@@ -308,6 +335,8 @@ if (!gotLock) {
   app.whenReady().then(() => {
     session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => cb(false));
     config = new Config(app.getPath('userData'), safeStorage);
+    cache = new LocalCache(app.getPath('userData'), safeStorage);
+    lock = createLock(config);
     api = createApi({
       fetch: (url, init) => net.fetch(url, init), // uses the system proxy settings
       getSession: () => config.getSession(),
@@ -320,6 +349,9 @@ if (!gotLock) {
     registerIpc();
     createWindow();
     createTray();
+    win.on('hide', () => { if (lock.state().onHide && lock.lockNow()) send('lock', lock.state()); }); // closing to the tray locks (if enabled)
+    powerMonitor.on('lock-screen', () => { if (lock.lockNow()) send('lock', lock.state()); });
+    powerMonitor.on('suspend', () => { if (lock.lockNow()) send('lock', lock.state()); });
     initUpdater();
     applySettings({}); // applies the "start with Windows" choice
   });
